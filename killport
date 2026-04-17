@@ -9,7 +9,17 @@ usage() {
 }
 
 if [ $# -eq 0 ]; then
-  usage
+  echo "Usage: killport <port>"
+  echo "       killport list"
+  echo ""
+  echo "Listening ports:"
+  echo ""
+  if command -v ss &>/dev/null; then
+    ss -tlnp | awk 'NR>1 {printf "  %-25s %-10s %s\n", $4, $1, $6}' | sort
+  elif command -v lsof &>/dev/null; then
+    lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null | awk 'NR>1 {printf "  %-8s %-10s %-10s %s\n", $9, $1, $2, $8}' | sort -t: -k2 -n
+  fi
+  exit 0
 fi
 
 # --- list all listening ports ---
