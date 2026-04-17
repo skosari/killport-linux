@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  echo "Usage: killport <port>"
+  echo "       killport 8080"
+  exit 1
+}
+
+if [ $# -eq 0 ]; then
+  usage
+fi
+
+PORT="$1"
+
+if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+  echo "Error: '$PORT' is not a valid port number (1–65535)"
+  exit 1
+fi
+
+# ss is preferred on Linux; fall back to lsof if not available
+if command -v ss &>/dev/null; then
+  PIDS=$(ss -tlnp "sport = :$PORT" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u || true)
+elif command -v lsof &>/dev/null; then
+  PIDS=$(lsof -ti :"$PORT" 2>/dev/null || true)
+elif command -v fuser &>/dev/null; then
+  PIDS=$(fuser "${PORT}/tcp" 2>/dev/null | tr ' ' '\n' | grep -v '^$' || true)
+else
+  echo "Error: requires ss, lsof, or fuser"
+  exit 1
+fi
+
+if [ -z "$PIDS" ]; then
+  echo "Nothing running on port $PORT"
+  exit 0
+fi
+
+echo "Port $PORT is in use:"
+echo ""
+
+while IFS= read -r pid; do
+  [ -z "$pid" ] && continue
+  info=$(ps -p "$pid" -o pid=,user=,comm=,command= 2>/dev/null || true)
+  if [ -n "$info" ]; then
+    pid_col=$(echo "$info"   | awk '{print $1}')
+    user_col=$(echo "$info"  | awk '{print $2}')
+    name_col=$(echo "$info"  | awk '{print $3}')
+    cmd_col=$(echo "$info"   | awk '{$1=$2=$3=""; sub(/^ +/, ""); print}')
+    printf "  PID:     %s\n"  "$pid_col"
+    printf "  User:    %s\n"  "$user_col"
+    printf "  Name:    %s\n"  "$name_col"
+    printf "  Command: %s\n"  "$cmd_col"
+    echo ""
+  fi
+done <<< "$PIDS"
+
+echo "$PIDS" | xargs kill -9
+echo "Killed."
