@@ -375,11 +375,32 @@ if [ $# -eq 0 ]; then
   echo "  killport status <port>     show if a port is open or closed"
   echo "  killport ip                show IP addresses, DNS, and network info"
   echo "  killport update            update to the latest version"
+  echo "  killport uninstall         remove killport and all firewall rules"
   echo ""
   exit 0
 fi
 
 case "$1" in
+
+  uninstall)
+    echo "Uninstalling killport..."
+    INSTALL_PATH=$(command -v killport)
+    if [ -f "$INSTALL_PATH" ]; then
+      sudo rm "$INSTALL_PATH"
+      echo "  Removed $INSTALL_PATH"
+    fi
+    if command -v ufw &>/dev/null; then
+      sudo ufw status numbered 2>/dev/null | grep -oP '(?<=# )killport-\S+' | while read -r rule; do
+        sudo ufw delete "$rule" 2>/dev/null || true
+      done
+    elif command -v firewall-cmd &>/dev/null; then
+      firewall-cmd --list-ports --permanent 2>/dev/null | tr ' ' '\n' | while read -r port; do
+        sudo firewall-cmd --permanent --remove-port="$port" 2>/dev/null || true
+      done
+      sudo firewall-cmd --reload 2>/dev/null || true
+    fi
+    echo "killport uninstalled."
+    ;;
 
   update)
     echo "Checking for updates..."
