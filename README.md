@@ -208,19 +208,10 @@ Already up to date (v1.6.6)
 ## Uninstall
 
 ```sh
-sudo rm /usr/local/bin/killport
+curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/uninstall.sh | bash
 ```
 
-If you used `killport open` to add firewall rules, remove them first:
-
-```sh
-# ufw
-sudo ufw delete allow <port>
-
-# firewalld
-sudo firewall-cmd --permanent --remove-port=<port>/tcp
-sudo firewall-cmd --reload
-```
+Removes the binary and any firewall rules created by `killport open`.
 
 ---
 
