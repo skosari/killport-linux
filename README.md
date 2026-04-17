@@ -41,10 +41,13 @@ wget -qO /usr/local/bin/killport https://raw.githubusercontent.com/skosari/killp
 ## Usage
 
 ```sh
-killport              # show instructions and list all listening ports
-killport <port>       # kill whatever is on that port
-killport list         # list all listening ports
-killport update       # update to the latest version
+killport                   show this help and list listening ports
+killport <port>            kill whatever is running on that port
+killport list              list all listening ports
+killport open <port>       open a port to external connections
+killport close <port>      close a port from external connections
+killport ip                show IP addresses, DNS, and network info
+killport update            update to the latest version
 ```
 
-Works with `ss` (preferred), `lsof`, or `fuser` — whichever is available on your system.
+Works with `ufw`, `firewalld`, or `iptables` for open/close. Uses `ss` (preferred), `lsof`, or `fuser` for port listing.
