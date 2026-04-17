@@ -41,19 +41,10 @@ wget -qO /usr/local/bin/killport https://raw.githubusercontent.com/skosari/killp
 ## Usage
 
 ```sh
-killport <port>     # kill whatever is on that port
-killport list       # list all listening ports
-```
-
-### killport list
-
-```sh
-killport list
-# Listening ports:
-#
-#   0.0.0.0:22        LISTEN     users:(("sshd",pid=1234))
-#   0.0.0.0:3000      LISTEN     users:(("node",pid=5678))
-#   127.0.0.1:5432    LISTEN     users:(("postgres",pid=910))
+killport              # show instructions and list all listening ports
+killport <port>       # kill whatever is on that port
+killport list         # list all listening ports
+killport update       # update to the latest version
 ```
 
 Works with `ss` (preferred), `lsof`, or `fuser` — whichever is available on your system.
