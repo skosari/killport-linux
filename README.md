@@ -20,21 +20,6 @@
 
 ---
 
-```
-$ killport 3000
-
-Port 3000 is in use:
-
-  PID:     48291
-  User:    ubuntu
-  Name:    node
-  Command: node /home/ubuntu/app/server.js
-
-Killed.
-```
-
----
-
 ## Install
 
 **Option 1 — curl** *(recommended)*
@@ -79,13 +64,70 @@ sudo curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/ki
 
 ---
 
-## Port Inspector
+## Examples
 
+### `killport 3000`
 ```
-$ killport ports
+  Port 3000 is in use:
 
+  PID:     48291
+  User:    ubuntu
+  Name:    node
+  Command: node /home/ubuntu/app/server.js
+
+Killed.
+```
+
+### `killport list`
+```
+  ●  0.0.0.0:3000        node        48291    TCP
+  ●  0.0.0.0:5432        postgres    312      TCP
+  ●  0.0.0.0:8080        nginx       1024     TCP
+  ●  127.0.0.1:6379      redis       2048     TCP
+```
+
+### `killport open 8080`
+```
+Opening port 8080 to external connections...
+Port 8080 is now open (TCP + UDP).
+```
+
+### `killport close 8080`
+```
+Closing port 8080 from external connections...
+Port 8080 is now closed.
+```
+
+### `killport openports`
+```
+  Firewall-Open Ports  (external access via killport)
+  ────────────────────────────────────────────
+
+  ●  80        listening   nginx
+  ●  443       listening   nginx
+  ○  8080      not listening
+
+  ────────────────────────────────────────────
+  3 port(s) open  ·  2 listening
+```
+
+### `killport closedports`
+```
+  Locally-Listening Ports  (no external access)
+  ────────────────────────────────────────────
+
+  ◆  3000      local only   node
+  ◆  5432      local only   postgres
+  ◆  6379      local only   redis
+
+  ────────────────────────────────────────────
+  3 port(s) listening locally  ·  no external access
+```
+
+### `killport ports`
+```
   Port Inspector  (local view — what this machine sees)
-  ────────────────────────────────────────────────────
+  ────────────────────────────────────────────
 
   Firewall  ENABLED   ufw active
   LAN IP    10.0.0.5
@@ -94,10 +136,90 @@ $ killport ports
   ────────  ──────────────  ──────────
   ●  22       sshd            open         (killport rule)
   ●  80       nginx           open         (killport rule)
+  ○  3000     node            blocked
   ○  5432     postgres        blocked
 
-  To truly verify external reachability, run from another machine:
+  ────────────────────────────────────────────
+  4 port(s) listening  ·  2 open to external access
+
+  This is only what the local machine reports. To truly verify
+  external reachability, run from another machine:
   killport opencheck 10.0.0.5
+```
+
+### `killport opencheck 10.0.0.5`
+```
+  External Port Check  → 10.0.0.5
+  ────────────────────────────────────────────
+
+  ●  22        open   ssh
+  ●  80        open   http
+  ●  443       open   https
+
+  ────────────────────────────────────────────
+  3 open port(s) found  ·  scanned 30 common ports via nmap
+```
+
+### `killport status 3000`
+```
+  Port 3000 status:
+
+  Firewall:  CLOSED  (no killport rule — external access blocked)
+  Listening: YES  (PID: 48291 — node)
+```
+
+### `killport ip`
+```
+  Network Interfaces
+  ────────────────────────────────────
+
+  Interface: eth1  (Docker network)
+  IPv4:      172.17.0.1
+
+  ┌─────────────────────────────────────────┐
+  │  Interface: eth0                         │
+  │  MAC:       52:54:00:1a:2b:3c           │
+  │  IPv4:      10.0.0.5                    │
+  └─────────────────────────────────────────┘
+
+  Default Gateway
+  ────────────────────────────────────
+  10.0.0.1
+
+  DNS Servers
+  ────────────────────────────────────
+  8.8.8.8
+  8.8.4.4
+
+  Firewall-managed ports (killport)
+  ────────────────────────────────────
+  22
+  80
+```
+
+### `killport update`
+```
+Checking for updates...
+Already up to date (v1.6.6)
+```
+
+---
+
+## Uninstall
+
+```sh
+sudo rm /usr/local/bin/killport
+```
+
+If you used `killport open` to add firewall rules, remove them first:
+
+```sh
+# ufw
+sudo ufw delete allow <port>
+
+# firewalld
+sudo firewall-cmd --permanent --remove-port=<port>/tcp
+sudo firewall-cmd --reload
 ```
 
 ---
@@ -113,16 +235,6 @@ $ killport ports
 | `iptables` | fallback |
 
 Port listing uses `ss` (preferred), with fallback to `lsof` or `fuser`.
-
----
-
-## Update
-
-```sh
-killport update
-```
-
-Self-updates by pulling the latest script from this repo. Version is checked via the GitHub API — no CDN caching issues.
 
 ---
 
