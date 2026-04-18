@@ -11,7 +11,7 @@
 
 **Kill whatever is running on a port — Linux**
 
-[![Version](https://img.shields.io/badge/version-1.7.0-00b4d8?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-1.10.3-00b4d8?style=flat-square)](#)
 [![Platform](https://img.shields.io/badge/platform-Linux-00b4d8?style=flat-square&logo=linux&logoColor=white)](#)
 [![Shell](https://img.shields.io/badge/shell-bash-00b4d8?style=flat-square&logo=gnubash&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-Source%20Available-00b4d8?style=flat-square)](LICENSE)
@@ -56,18 +56,30 @@ curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/killpor
 | `killport open <port>` | Open a port to external connections |
 | `killport close <port>` | Close a port from external connections |
 | `killport openports` | Show all ports open to external access |
+| `killport openports <ip>` | Probe an IP to verify which ports are reachable |
 | `killport closedports` | Show all listening ports with no external access |
 | `killport ports` | Inspect all ports with live firewall status |
-| `killport opencheck <ip>` | Probe an IP to verify external reachability |
 | `killport status <port>` | Show if a port is open or closed |
 | `killport ip` | Show IP addresses, DNS, and network info |
-| `killport update` | Update to the latest version |
-| `killport uninstall` | Remove killport and all firewall rules |
+| `killport scan <ip>` | Scan ports on a remote host (no AI) |
+| `killport scan <ip> all` | Scan all 65535 ports on a remote host |
+| `killport watch <port>` | Monitor live connections to a local port |
+| `killport cert <host:port>` | Inspect TLS certificate (expiry, SANs, cipher) |
+| `killport sniff <port>` | Capture and display traffic on a port |
+| `killport sniff <ip:port>` | Capture traffic to/from a specific host:port |
+| `killport vuln <ip:port>` | Detect service version + query CVE database |
+| `killport fix <ip:port>` | Detect vulns and generate/apply a hardening fix |
+| `killport audit` | Review firewall rules with plain-English findings |
+| `killport dns <domain>` | DNS recon: A/MX/TXT/NS/AXFR zone transfer test |
+| `killport forward <port> <host:port>` | Forward a local port to a remote host:port |
+| `killport stress <ip:port>` | Authorized connection flood / stress test |
 | `killport attack <ip>` | AI pentest: scan 47 common ports + analysis |
 | `killport attack allports <ip>` | AI pentest: scan all 65535 ports + analysis |
 | `killport attack <ip>:<port>` | AI pentest: single port deep dive |
 | `killport attack config` | Configure Ollama host and model |
 | `killport attack log` | View attack history |
+| `killport update` | Update to the latest version |
+| `killport uninstall` | Remove killport and all firewall rules |
 
 ---
 
@@ -87,22 +99,10 @@ Killed.
 
 ### `killport list`
 ```
-  ●  0.0.0.0:3000        node        48291    TCP
-  ●  0.0.0.0:5432        postgres    312      TCP
-  ●  0.0.0.0:8080        nginx       1024     TCP
-  ●  127.0.0.1:6379      redis       2048     TCP
-```
-
-### `killport open 8080`
-```
-Opening port 8080 to external connections...
-Port 8080 is now open (TCP + UDP).
-```
-
-### `killport close 8080`
-```
-Closing port 8080 from external connections...
-Port 8080 is now closed.
+  ●  0.0.0.0:3000        node        48291
+  ●  0.0.0.0:5432        postgres    312
+  ●  0.0.0.0:8080        nginx       1024
+  ●  127.0.0.1:6379      redis       2048
 ```
 
 ### `killport openports`
@@ -116,45 +116,12 @@ Port 8080 is now closed.
 
   ────────────────────────────────────────────
   3 port(s) open  ·  2 listening
+
+  To verify external reachability from another machine:
+  killport openports 10.0.0.5
 ```
 
-### `killport closedports`
-```
-  Locally-Listening Ports  (no external access)
-  ────────────────────────────────────────────
-
-  ◆  3000      local only   node
-  ◆  5432      local only   postgres
-  ◆  6379      local only   redis
-
-  ────────────────────────────────────────────
-  3 port(s) listening locally  ·  no external access
-```
-
-### `killport ports`
-```
-  Port Inspector  (local view — what this machine sees)
-  ────────────────────────────────────────────
-
-  Firewall  ENABLED   ufw active
-  LAN IP    10.0.0.5
-
-  PORT      PROCESS         ACCESS
-  ────────  ──────────────  ──────────
-  ●  22       sshd            open         (killport rule)
-  ●  80       nginx           open         (killport rule)
-  ○  3000     node            blocked
-  ○  5432     postgres        blocked
-
-  ────────────────────────────────────────────
-  4 port(s) listening  ·  2 open to external access
-
-  This is only what the local machine reports. To truly verify
-  external reachability, run from another machine:
-  killport opencheck 10.0.0.5
-```
-
-### `killport opencheck 10.0.0.5`
+### `killport openports 10.0.0.5`
 ```
   External Port Check  → 10.0.0.5
   ────────────────────────────────────────────
@@ -167,96 +134,223 @@ Port 8080 is now closed.
   3 open port(s) found  ·  scanned 30 common ports via nmap
 ```
 
-### `killport status 3000`
+### `killport ports`
 ```
-  Port 3000 status:
-
-  Firewall:  CLOSED  (no killport rule — external access blocked)
-  Listening: YES  (PID: 48291 — node)
-```
-
-### `killport ip`
-```
-  Network Interfaces
-  ────────────────────────────────────
-
-  Interface: eth1  (Docker network)
-  IPv4:      172.17.0.1
-
-  ┌─────────────────────────────────────────┐
-  │  Interface: eth0                         │
-  │  MAC:       52:54:00:1a:2b:3c           │
-  │  IPv4:      10.0.0.5                    │
-  └─────────────────────────────────────────┘
-
-  Default Gateway
-  ────────────────────────────────────
-  10.0.0.1
-
-  DNS Servers
-  ────────────────────────────────────
-  8.8.8.8
-  8.8.4.4
-
-  Firewall-managed ports (killport)
-  ────────────────────────────────────
-  22
-  80
-```
-
-### `killport update`
-```
-Checking for updates...
-Already up to date (v1.6.6)
-```
-
-### `killport uninstall`
-```
-Uninstalling killport...
-  Removed /usr/local/bin/killport
-killport uninstalled.
-```
-
-### `killport attack config`
-```
-  Attack Config
+  Port Inspector  (local view)
   ────────────────────────────────────────────
 
-  Config: /home/ubuntu/.config/killport/attack.conf
+  Firewall  ENABLED   ufw active
+  LAN IP    10.0.0.5
 
-  Ollama Host
-  Ollama is the AI engine that runs your models locally or on another machine.
+  PORT      PROCESS         ACCESS
+  ────────  ──────────────  ──────────
+  ●  22       sshd            open         (killport rule)
+  ●  80       nginx           open         (killport rule)
+  ○  3000     node            blocked
+  ○  5432     postgres        blocked
+```
 
-    • This machine:    localhost:11434  or  127.0.0.1:11434
-    • Another LAN box: 192.168.x.x:11434  (the IP of that machine)
-    • Remote server:   45.76.x.x:11434   (must have port 11434 open)
+### `killport scan 10.0.0.5`
+```
+  killport scan  10.0.0.5
+  ────────────────────────────────────────────
 
-  Default port is always 11434. Press Enter to keep current value.
+  Scanning common ports...
 
-  Current: localhost:11434
-  → 
+  PORT     SERVICE             VERSION
+  ────────────────────────────────────────────────────
+  22       ssh                 OpenSSH 9.2p1
+  80       http                nginx 1.24.0
+  3306     mysql               MySQL 8.0.33
+  6379     redis               Redis key-value store
 
-  Connecting to Ollama at localhost:11434...
-  Connected.  2 model(s) available:
+  Host latency: 0.0008 s latency
+```
 
-  ▶  1  llama3.2:latest
-     2  deepseek-r1:8b
+### `killport watch 3000`
+```
+  killport watch  port 3000  (Ctrl+C to stop)
+  ────────────────────────────────────────────
 
-  Select model  [current: 1]
-  → 
+  TIME        REMOTE                      STATE           PROCESS
+  ──────────────────────────────────────────────────────────────
+  14:32:01    10.0.0.55:51204             ESTABLISHED     node
+  14:32:09    10.0.0.55:51204             CLOSE_WAIT      node
+```
 
-  Saved.  Host: localhost:11434  ·  Model: llama3.2:latest
+### `killport cert github.com`
+```
+  killport cert  github.com:443
+  ────────────────────────────────────────────
+
+  Subject :  CN=github.com
+  Issuer  :  C=US, O=DigiCert Inc, CN=DigiCert TLS Hybrid ECC SHA384 2020 CA1
+  Expires :  2026-03-26  (341 days)
+  SANs    :
+    github.com
+    www.github.com
+
+  Protocol: Tls13
+  Cipher  : Aes128
+```
+
+### `killport sniff 443`
+```
+  killport sniff  port 443  (Ctrl+C to stop)
+  ────────────────────────────────────────────
+
+  Filter: port 443. Requires sudo.
+
+  14:32:01.123  10.0.0.55.51204 > 10.0.0.1.443: Flags [S]
+  14:32:01.124  10.0.0.1.443 > 10.0.0.55.51204: Flags [S.]
+```
+
+### `killport sniff 10.0.0.10:22`
+```
+  killport sniff  10.0.0.10:22  (Ctrl+C to stop)
+  ────────────────────────────────────────────
+
+  Filter: host 10.0.0.10 and port 22. Requires sudo.
+
+  14:33:10.441  10.0.0.5.52100 > 10.0.0.10.22: Flags [S]
+  14:33:10.442  10.0.0.10.22 > 10.0.0.5.52100: Flags [S.]
+```
+
+### `killport vuln 10.0.0.5:22`
+```
+  killport vuln  10.0.0.5:22
+  ────────────────────────────────────────────
+
+  Detecting service on port 22...
+
+  Service:  ssh
+  Version:  OpenSSH 9.2p1
+
+  Querying NVD database...
+
+  85 CVE(s) found — showing top 10:
+
+  CVE-2023-38408  [CRITICAL  9.8]
+  The PKCS#11 feature in ssh-agent in OpenSSH before 9.3p2 has an insufficiently...
+
+  CVE-2023-51385  [MEDIUM  6.5]
+  In ssh in OpenSSH before 9.6, OS command injection might occur if a user name or...
+```
+
+### `killport fix 10.0.0.5:22`
+```
+  killport fix  10.0.0.5:22
+  ────────────────────────────────────────────
+
+  Detecting service on port 22...
+
+  Service:  ssh
+  Version:  OpenSSH 9.2p1
+
+  ✓  Target is this machine — can apply fixes directly.
+
+  Querying NVD database...
+
+  ────────────────────────────────────────────
+  AI Remediation Advice
+
+  UPGRADE: sudo apt-get update && apt-get install --only-upgrade openssh-server
+
+  CONFIG:
+    PermitRootLogin no
+    MaxAuthTries 3
+    X11Forwarding no
+    PermitEmptyPasswords no
+
+  NETWORK: sudo ufw limit 22/tcp
+
+  ────────────────────────────────────────────
+  Apply these fixes now? (requires sudo)  [yes/N]: yes
+
+    [fix] Backed up sshd_config
+    [fix] sshd_config hardened
+    [fix] SSH service restarted
+    [fix] OpenSSH upgrade attempted
+    [fix] Fix script completed
+
+  ✓  Fixes applied.  Verify with: killport vuln 10.0.0.5:22
+```
+
+### `killport audit`
+```
+  killport audit  firewall rule review
+  ────────────────────────────────────────────
+
+  ufw status: active
+
+  Findings:
+
+  ✓  ufw is active.
+  ⚠  Port 22 (SSH) referenced — confirm it's restricted to trusted IPs.
+  ⚠  No rate limiting rules found — consider: ufw limit 22/tcp
+
+  Run 'killport ports' to cross-reference currently exposed ports.
+```
+
+### `killport dns example.com`
+```
+  killport dns  example.com
+  ────────────────────────────────────────────
+
+  A         93.184.216.34
+  AAAA      2606:2800:220:1:248:1893:25c8:1946
+  MX        (none)
+  NS        a.iana-servers.net
+            b.iana-servers.net
+  TXT       "v=spf1 -all"
+
+  REVERSE
+    93.184.216.34  →  93.184.216.34.in-addr.arpa
+
+  AXFR
+    ✓  Zone transfers blocked.
+```
+
+### `killport forward 8080 10.0.0.10:80`
+```
+  killport forward  localhost:8080  →  10.0.0.10:80
+  ────────────────────────────────────────────
+
+  ✓  socat  —  forwarding port 8080 to 10.0.0.10:80
+  Press Ctrl+C to stop.
+```
+
+### `killport stress 10.0.0.5:80`
+```
+  killport stress  authorized connection flood testing
+  ────────────────────────────────────────────
+
+  Target:   10.0.0.5:80  (service: http)
+
+  Duration in seconds — auto-starting in 10s [default 30]:  30
+
+  ⚠  This will flood 10.0.0.5:80 for 30s at up to 20 concurrent connections.
+  Only test systems you own or have written authorization to test.
+
+  Type yes to confirm: yes
+
+  ⠸  [████████████████░░░░░░░░]  12,847 req  428/s  0 err  18s left
+
+  ════════════════════════════════════════════════════════
+  STRESS TEST COMPLETE
+  ════════════════════════════════════════════════════════
+  Service:   http  (10.0.0.5:80)
+  Duration:  30s  ·  Threads: 20
+  Requests:  18,432  (614/s avg  ·  891/s peak)
+  Errors:    0  (0%)
+  After:     ONLINE — still responding
+  ════════════════════════════════════════════════════════
 ```
 
 ### `killport attack 10.0.0.5`
 ```
   AI Pentest  →  10.0.0.5  (47 common ports)
   ────────────────────────────────────────────
-
-  nmap not installed — needed for port/service scanning.
-  Install it now? (requires sudo) [Y/n] → y
-
-  ... (sudo apt-get install -y nmap) ...
 
   Connecting to Ollama at localhost:11434...
   Model: llama3.2:latest
@@ -269,91 +363,105 @@ killport uninstalled.
 
   Agent starting  target: 10.0.0.5  ·  model: llama3.2:latest
 
-  ▶  SCAN_PORT 3306
+  💭 MySQL is running — I'll check for weak credentials first
   ▶  WORDLIST mysql 3306
      ✓ root:  →  LOGIN SUCCEEDED
-  ▶  BANNER_GRAB 27017
-  ▶  WORDLIST ssh 22
-     no credentials from wordlist succeeded
   ▶  REPORT
 
-  Building report...
-
   ══════════════════════════════════════════════════════════════
-    SECURITY REPORT  ·  10.0.0.5  ·  2025-04-17 14:32
-    Model: llama3.2:latest
+    SECURITY REPORT  ·  10.0.0.5  ·  2025-04-18 14:32
   ══════════════════════════════════════════════════════════════
 
-    PORT 3306 — MYSQL  (MySQL 8.0.33)
+    PORT 3306 — MYSQL
     Risk: 🔴 Critical
     ────────────────────────────────────────────────────────────────
     ⚠  WEAK CREDENTIAL WORKS: root:(empty)
 
-    What this means:
-      Your MySQL database has no root password set.
-      Anyone who can reach port 3306 has full admin access to all databases.
-
     How to fix it:
-      1. Use a strong unique password for every database user
-      2. Disable remote root login: run  DELETE FROM mysql.user WHERE User='root' AND Host!='localhost';
-      3. Block port 3306 from the internet with a firewall rule
+      1. Set a root password immediately
+      2. Run: killport fix 10.0.0.5:3306
 
-    PORT 22 — SSH  (OpenSSH 8.9p1 Ubuntu)
-    Risk: 🟡 Medium
-    ────────────────────────────────────────────────────────────────
-
-    What this means:
-      SSH lets you log in remotely to manage the server.
-      If weak passwords are allowed, attackers can brute-force their way in.
-
-    How to fix it:
-      1. Disable password login — use SSH keys only
-         Edit /etc/ssh/sshd_config → set: PasswordAuthentication no
-      2. Move SSH to a non-standard port (e.g. 2222) to reduce bot noise
-      3. Install fail2ban to automatically block repeated failed logins
-
-  ══════════════════════════════════════════════════════════════
-  ── What to do first ──
-  ══════════════════════════════════════════════════════════════
-    1. [CRITICAL] Change the password on mysql (port 3306) — 'root:' works
-    2. [HIGH] Review and harden mongodb (port 27017) — see fix steps above
-
-  ────────────────────────────────────────────
-  Complete  ·  model: llama3.2:latest  ·  target: 10.0.0.5
-  Logged to: /home/ubuntu/.config/killport/attack.log
+  Logged to: ~/.config/killport/attack.log
 ```
 
-### `killport attack allports 10.0.0.5`
-```
-  AI Pentest  →  10.0.0.5  (all 65535 ports)
-  ────────────────────────────────────────────
+---
 
-  Pass 1/2  Scanning 47 common ports on 10.0.0.5...
+## Security Toolkit
 
-  ●  22        ssh           OpenSSH 8.9p1
-  ●  3306      mysql         MySQL 8.0.33
+killport includes a full suite of network security tools beyond just killing ports.
 
-  Pass 2/2  scanning remaining 65535 ports on 10.0.0.5...
+### Vulnerability Detection → `killport vuln`
 
-  [████████████████████░░░░░░░░░░░░░░░░░░░░]  51%
-  ●  49152     unknown
+Detects service version via nmap and queries the [NVD](https://nvd.nist.gov) CVE database:
 
-  [████████████████████████████████████████] 100%
-  Pass 2/2 complete.
-
-  Agent starting  target: 10.0.0.5  ·  model: llama3.2:latest
-  ...
+```sh
+killport vuln 10.0.0.5:22    # SSH
+killport vuln 10.0.0.5:6379  # Redis
+killport vuln 10.0.0.5:3306  # MySQL
 ```
 
-### `killport attack log`
-```
-  Attack Log  /home/ubuntu/.config/killport/attack.log
+### One-Command Hardening → `killport fix`
 
-  ════════════════════════════════════════════════════════════
-  Time:   2025-04-17 14:32:01  |  Target: 10.0.0.5
-  Model:  llama3.2:latest      |  Ports:  47 common ports
-  ════════════════════════════════════════════════════════════
-  ... (full report) ...
+Automated fix after `vuln` findings. Local targets get direct apply; remote targets get a generated script:
+
+```sh
+killport fix 127.0.0.1:6379   # harden local Redis
+killport fix 10.0.0.5:22      # generate SSH fix script for remote machine
+```
+
+Supports: SSH, Redis, MySQL, PostgreSQL, MongoDB, Nginx/Apache, FTP, Telnet, Memcached.
+
+### Port Scanner → `killport scan`
+
+```sh
+killport scan 10.0.0.5        # common ports
+killport scan 10.0.0.5 all    # all 65535 ports
+```
+
+### TLS Certificate Inspector → `killport cert`
+
+```sh
+killport cert github.com          # port 443 by default
+killport cert 10.0.0.5:8443       # custom port
+```
+
+### Live Traffic Capture → `killport sniff`
+
+```sh
+killport sniff 443                 # all traffic on port 443
+killport sniff 10.0.0.10:22        # traffic to/from specific host:port
+```
+
+Wraps `tcpdump`. Requires `sudo`.
+
+### Live Connection Monitor → `killport watch`
+
+```sh
+killport watch 3000    # watch new connections in real time
+```
+
+### DNS Recon → `killport dns`
+
+```sh
+killport dns example.com    # A/AAAA/MX/NS/TXT + reverse DNS + AXFR test
+```
+
+### Firewall Audit → `killport audit`
+
+```sh
+killport audit    # reviews ufw/iptables/nft rules with plain-English findings
+```
+
+### Port Forwarder → `killport forward`
+
+```sh
+killport forward 8080 10.0.0.10:80    # tunnel local:8080 → remote:80
+```
+
+### Stress Test → `killport stress`
+
+```sh
+killport stress 10.0.0.5:80    # authorized connection flood test
 ```
 
 ---
@@ -362,126 +470,45 @@ killport uninstalled.
 
 > **Point it at any machine on your network. Watch an AI hunt for vulnerabilities in real time.**
 
-`killport attack` is a fully agentic AI pentest tool powered by [Ollama](https://ollama.com) — your local AI, running entirely on your hardware, no cloud, no API keys. It doesn't just run a scan and hand you a wall of output. It **thinks**, **acts**, and **investigates** — probing services, testing credentials, hunting for exposed paths, and attempting to crack hashes — then delivers a plain-English security report with specific fix steps anyone can follow.
-
-**Everything runs locally. Your scan data never leaves your machine.**
-
-### Zero setup friction — missing tools install themselves
-
-When you run `killport attack`, it checks whether `nmap`, `sshpass`, and `hashcat` are installed. If any are missing, it asks to install them for you **right there** — no new terminal, no manual steps:
-
-```
-  nmap not installed — needed for port/service scanning.
-  Install it now? (requires sudo) [Y/n] → y
-  ... sudo apt-get install -y nmap ...
-  Continuing.
-```
-
-Auto-detects your package manager: `apt-get`, `dnf`, `yum`, `pacman`, or `zypper`. If none are found, it shows you the exact manual command for your distro.
+`killport attack` is a fully agentic AI pentest tool powered by [Ollama](https://ollama.com) — runs entirely on your hardware, no cloud, no API keys.
 
 ### Setup
 
 1. [Install Ollama](https://ollama.com/download) and pull a model:
    ```sh
    ollama pull llama3.2
-   # or try a reasoning model:
-   ollama pull deepseek-r1:8b
+   ollama pull deepseek-r1:8b   # reasoning model
    ```
-2. Configure killport to point at your Ollama instance:
+2. Configure killport:
    ```sh
    killport attack config
    ```
-   - **This machine:** `localhost:11434` or `127.0.0.1:11434`
-   - **Another LAN machine:** `192.168.x.x:11434`
-   - **Remote server:** `45.76.x.x:11434` *(port 11434 must be open)*
-
-   The config screen connects live to Ollama and shows you the models you have loaded — pick one by number.
-
-3. Run your first attack:
+3. Run:
    ```sh
    killport attack 10.0.0.5
    ```
-   That's it. The AI takes over from there.
 
 ### Commands
 
 ```sh
-killport attack 10.0.0.5            # scan 47 common ports (fast)
-killport attack allports 10.0.0.5   # scan all 65535 ports with progress bar
-killport attack 10.0.0.5:6379       # deep dive a single port
-killport attack config               # configure Ollama host + pick model
-killport attack log                  # view full history of past attacks
+killport attack 10.0.0.5            # scan 47 common ports
+killport attack allports 10.0.0.5   # scan all 65535 ports
+killport attack 10.0.0.5:6379       # single port deep dive
+killport attack config               # configure Ollama host + model
+killport attack log                  # view past attack reports
 ```
 
-### How it works
-
-The agent runs a **ReAct loop** — Ollama reasons about what to investigate next, calls a tool, receives the result, and iterates (up to 20 rounds). The AI drives the entire investigation. You just watch it work.
+### Agent tools
 
 | Tool | What the AI can do |
 |---|---|
-| `SCAN_PORT` | Deep nmap scan with version detection on any port |
-| `BANNER_GRAB` | Raw TCP banner grab — extracts version strings and hashes |
-| `HTTP_PROBE` | Fetch HTTP/HTTPS responses — extracts embedded hashes |
-| `HTTP_PATHS` | Probe 20+ sensitive paths: `/admin`, `/.env`, `/actuator/env`, `/.git/HEAD`, etc. |
-| `WORDLIST` | Credential spray across SSH, FTP, Redis, MySQL, PostgreSQL, HTTP basic auth |
-| `NMAP_SCRIPT` | Run any nmap NSE script against any port |
-| `CRACK_HASH` | Crack MD5 / SHA1 / SHA256 / bcrypt / MD5crypt / SHA512crypt via hashcat or john + rockyou |
-
-The security report is **built programmatically** — risk levels, fix steps, and priority order are all deterministic code, not AI guesswork. Ollama contributes plain-English descriptions of each finding. The result is consistent, structured, and logged to `~/.config/killport/attack.log` after every run.
-
-### Example output
-
-```
-  AI Pentest  →  192.168.1.10  (47 common ports)
-  ────────────────────────────────────────────
-
-  Pass 1/2  Scanning 47 common ports on 192.168.1.10...
-
-  ●  22        ssh           OpenSSH 8.9p1
-  ●  6379      redis         Redis 7.0.11
-  ●  27017     mongodb       MongoDB 6.0
-
-  Agent starting  target: 192.168.1.10  ·  model: llama3.2
-
-  ▶  SCAN_PORT 6379
-  ▶  WORDLIST redis 6379
-     CRITICAL: Redis has NO password — fully open to anyone
-  ▶  REPORT
-
-  ══════════════════════════════════════════════════════════════
-    SECURITY REPORT  ·  192.168.1.10  ·  2025-04-17 14:32
-    Model: llama3.2
-  ══════════════════════════════════════════════════════════════
-
-    PORT 6379 — REDIS
-    Risk: 🔴 Critical
-    ────────────────────────────────────────────────────────
-    ⚠  NO PASSWORD REQUIRED — anyone on the network can connect
-
-    What this means:
-      Your Redis database has no password set.
-      Anyone on your network can read, modify, or delete all stored data.
-
-    How to fix it:
-      1. Set a strong password: add  requirepass YOURPASSWORD  to /etc/redis/redis.conf
-      2. Bind Redis to localhost only: add  bind 127.0.0.1  to redis.conf
-      3. Block port 6379 from the network with a firewall rule
-
-  ══════════════════════════════════════════════════════════════
-  ── What to do first ──
-  ══════════════════════════════════════════════════════════════
-    1. [CRITICAL] Set a password on redis (port 6379) — it has none right now
-```
-
----
-
-## Uninstall
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/uninstall.sh | bash
-```
-
-Removes the binary and any firewall rules created by `killport open`.
+| `SCAN_PORT` | Deep nmap scan with version detection |
+| `BANNER_GRAB` | Raw TCP banner grab |
+| `HTTP_PROBE` | Fetch HTTP/HTTPS paths, extract hashes |
+| `HTTP_PATHS` | Probe 20+ sensitive paths: `/admin`, `/.env`, `/.git/HEAD`, etc. |
+| `WORDLIST` | Credential spray: SSH, FTP, Redis, MySQL, PostgreSQL, HTTP |
+| `NMAP_SCRIPT` | Run any nmap NSE script |
+| `CRACK_HASH` | Crack MD5/SHA1/SHA256/bcrypt via hashcat or john |
 
 ---
 
@@ -496,6 +523,24 @@ Removes the binary and any firewall rules created by `killport open`.
 | `iptables` | fallback |
 
 Port listing uses `ss` (preferred), with fallback to `lsof` or `fuser`.
+
+---
+
+## Uninstall
+
+**Option 1 — built-in command**
+
+```sh
+killport uninstall
+```
+
+Removes the binary and any firewall rules created by `killport open`.
+
+**Option 2 — curl**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/uninstall.sh | bash
+```
 
 ---
 
