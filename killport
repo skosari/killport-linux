@@ -1627,7 +1627,7 @@ cert_check() {
   printf "  ${D}Connecting...${R}\n\n"
 
   local raw_cert hs
-  raw_cert=$(echo "" | timeout 6 openssl s_client -connect "${host}:${port}" \
+  raw_cert=$(echo "Q" | timeout 6 openssl s_client -connect "${host}:${port}" \
     -servername "$host" 2>/dev/null) || true
   hs=$(echo "$raw_cert" | grep -E "Protocol|Cipher" | head -4 || true)
   local cert_info
@@ -1899,7 +1899,8 @@ dns_recon() {
     local axfr_out=""
     if [ "$has_dig" -eq 1 ]; then axfr_out=$(dig AXFR "$domain" "@$ns" 2>/dev/null || true)
     else axfr_out=$(host -l "$domain" "$ns" 2>/dev/null || true); fi
-    if echo "$axfr_out" | grep -qvE "Transfer failed|REFUSED|timed out|no servers|; <<>>"; then
+    if [ -n "$axfr_out" ] && echo "$axfr_out" | grep -qE "\bSOA\b|[[:space:]]IN[[:space:]]" \
+        && ! echo "$axfr_out" | grep -qE "Transfer failed|REFUSED|timed out|no servers"; then
       printf "    ${RE}⚠  ALLOWED from %s — misconfiguration!${R}\n" "$ns"; axfr_ok=1; fi
   done
   [ "$axfr_ok" -eq 0 ] && printf "    ${G}✓  Zone transfers blocked.${R}\n" || true
