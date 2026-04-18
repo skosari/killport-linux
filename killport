@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.10.6"
+VERSION="1.10.7"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
@@ -202,9 +202,13 @@ ports_inspect() {
     printf "  Firewall  ${Y}${B}DISABLED${R}  ${D}${fw_name} is off — all listening ports may be reachable externally${R}\n"
   fi
 
-  # Local LAN IP
-  local lan_ip
-  lan_ip=$(ip -4 addr show 2>/dev/null | awk '/inet / && $2 !~ /^127\./{gsub(/\/[0-9]+/,"",$2); print $2; exit}')
+  # Local LAN IP — prefer the interface used for the default gateway
+  local lan_ip _gw_iface
+  _gw_iface=$(ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
+  if [ -n "$_gw_iface" ]; then
+    lan_ip=$(ip -4 addr show "$_gw_iface" 2>/dev/null | awk '/inet /{gsub(/\/[0-9]+/,"",$2); print $2; exit}')
+  fi
+  [ -z "$lan_ip" ] && lan_ip=$(ip -4 addr show 2>/dev/null | awk '/inet / && $2 !~ /^127\./{gsub(/\/[0-9]+/,"",$2); print $2; exit}')
   [ -n "$lan_ip" ] && printf "  LAN IP    ${B}%s${R}\n" "$lan_ip"
 
   printf "\n  ${B}%-8s  %-14s  %-10s  %s${R}\n" "PORT" "PROCESS" "ACCESS" ""
@@ -310,9 +314,13 @@ opencheck_ports() {
 show_ip() {
   echo "Network Interfaces"
   echo "────────────────────────────────────"
-  local iface mac ipv4 ipv6 status info
+  local iface mac ipv4 ipv6 status info link_info
   local primary_iface primary_mac primary_ipv4 primary_ipv6 primary_status
   primary_iface="" primary_mac="" primary_ipv4="" primary_ipv6="" primary_status=""
+
+  # Determine the interface used for the default gateway route
+  local gw_iface
+  gw_iface=$(ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
 
   while IFS= read -r iface; do
     [[ "$iface" == "lo" ]] && continue
@@ -325,7 +333,12 @@ show_ip() {
     status=$(printf '%s\n' "$link_info" | grep -oE 'state (UP|DOWN|UNKNOWN)' | awk '{print tolower($2)}' | head -1)
     [ -z "$mac" ] && [ -z "$ipv4" ] && continue
 
-    # Reserve the first UP interface with a real IPv4 as primary
+    # Reserve the gateway interface as primary; fall back to first UP+IPv4 if not matched yet
+    if [ "$iface" = "$gw_iface" ]; then
+      primary_iface="$iface"; primary_mac="$mac"; primary_ipv4="$ipv4"
+      primary_ipv6="$ipv6";   primary_status="$status"
+      continue
+    fi
     if [ -z "$primary_iface" ] && [ "$status" = "up" ] && [ -n "$ipv4" ]; then
       primary_iface="$iface"; primary_mac="$mac"; primary_ipv4="$ipv4"
       primary_ipv6="$ipv6";   primary_status="$status"
