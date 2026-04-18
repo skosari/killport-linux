@@ -11,7 +11,7 @@
 
 **Kill whatever is running on a port — Linux**
 
-[![Version](https://img.shields.io/badge/version-1.6.7-00b4d8?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-1.7.0-00b4d8?style=flat-square)](#)
 [![Platform](https://img.shields.io/badge/platform-Linux-00b4d8?style=flat-square&logo=linux&logoColor=white)](#)
 [![Shell](https://img.shields.io/badge/shell-bash-00b4d8?style=flat-square&logo=gnubash&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-Source%20Available-00b4d8?style=flat-square)](LICENSE)
@@ -31,9 +31,9 @@ curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/install
 **Option 2 — wget**
 
 ```sh
-wget -qO /usr/local/bin/killport \
-  https://raw.githubusercontent.com/skosari/killport-linux/main/killport \
-  && chmod +x /usr/local/bin/killport
+wget -qO /tmp/killport https://raw.githubusercontent.com/skosari/killport-linux/main/killport \
+  && sudo mv /tmp/killport /usr/local/bin/killport \
+  && sudo chmod +x /usr/local/bin/killport
 ```
 
 **Option 3 — Manual**
