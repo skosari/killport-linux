@@ -2,15 +2,15 @@
 
 set -euo pipefail
 
-VERSION="1.10.4"
+VERSION="1.10.6"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
-ANCHOR_FILE="/etc/pf.anchors/killport"
+ANCHOR_FILE="/etc/killport/rules"
 
 fetch_remote_version() {
   curl -fsSL --max-time "${1:-3}" "${API}/VERSION" 2>/dev/null \
-    | grep '"content"' | awk -F'"' '{print $4}' | tr -d '\\n' | base64 -D | tr -d '[:space:]' || true
+    | grep '"content"' | awk -F'"' '{print $4}' | tr -d '\\n' | base64 -d | tr -d '[:space:]' || true
 }
 
 banner() {
@@ -38,31 +38,38 @@ list_ports() {
 open_port() {
   local PORT=$1
   echo "Opening port $PORT to external connections..."
+  sudo mkdir -p "$(dirname "$ANCHOR_FILE")"
   if [ ! -f "$ANCHOR_FILE" ]; then sudo touch "$ANCHOR_FILE"; fi
-  if sudo grep -q "port $PORT$" "$ANCHOR_FILE" 2>/dev/null; then
+  if sudo grep -qE "^port $PORT$" "$ANCHOR_FILE" 2>/dev/null; then
     echo "Port $PORT is already open."
     exit 0
   fi
-  printf "pass in proto tcp from any to any port %s\npass in proto udp from any to any port %s\n" "$PORT" "$PORT" \
-    | sudo tee -a "$ANCHOR_FILE" > /dev/null
-  if ! sudo grep -q 'anchor "killport"' /etc/pf.conf 2>/dev/null; then
-    printf '\nanchor "killport"\nload anchor "killport" from "%s"\n' "$ANCHOR_FILE" \
-      | sudo tee -a /etc/pf.conf > /dev/null
+  printf "port %s\n" "$PORT" | sudo tee -a "$ANCHOR_FILE" > /dev/null
+  if command -v ufw &>/dev/null; then
+    sudo ufw allow "$PORT"/tcp comment "killport-${PORT}-tcp" 2>/dev/null || true
+    sudo ufw allow "$PORT"/udp comment "killport-${PORT}-udp" 2>/dev/null || true
+  elif command -v iptables &>/dev/null; then
+    sudo iptables -I INPUT -p tcp --dport "$PORT" -j ACCEPT -m comment --comment "killport-${PORT}" 2>/dev/null || true
+    sudo iptables -I INPUT -p udp --dport "$PORT" -j ACCEPT -m comment --comment "killport-${PORT}" 2>/dev/null || true
   fi
-  sudo pfctl -f /etc/pf.conf 2>/dev/null
-  sudo pfctl -e 2>/dev/null || true
   echo "Port $PORT is now open (TCP + UDP)."
 }
 
 close_port() {
   local PORT=$1
   echo "Closing port $PORT from external connections..."
-  if [ ! -f "$ANCHOR_FILE" ] || ! sudo grep -q "port $PORT$" "$ANCHOR_FILE" 2>/dev/null; then
+  if [ ! -f "$ANCHOR_FILE" ] || ! sudo grep -qE "^port $PORT$" "$ANCHOR_FILE" 2>/dev/null; then
     echo "Port $PORT is not managed by killport."
     exit 0
   fi
-  sudo sed -i '' "/port ${PORT}$/d" "$ANCHOR_FILE"
-  sudo pfctl -f /etc/pf.conf 2>/dev/null
+  sudo sed -i "/^port ${PORT}$/d" "$ANCHOR_FILE"
+  if command -v ufw &>/dev/null; then
+    sudo ufw delete allow "$PORT"/tcp 2>/dev/null || true
+    sudo ufw delete allow "$PORT"/udp 2>/dev/null || true
+  elif command -v iptables &>/dev/null; then
+    sudo iptables -D INPUT -p tcp --dport "$PORT" -j ACCEPT -m comment --comment "killport-${PORT}" 2>/dev/null || true
+    sudo iptables -D INPUT -p udp --dport "$PORT" -j ACCEPT -m comment --comment "killport-${PORT}" 2>/dev/null || true
+  fi
   echo "Port $PORT is now closed."
 }
 
@@ -72,7 +79,7 @@ status_port() {
   echo ""
 
   # Firewall rule
-  if [ -f "$ANCHOR_FILE" ] && sudo grep -q "port $PORT$" "$ANCHOR_FILE" 2>/dev/null; then
+  if [ -f "$ANCHOR_FILE" ] && sudo grep -qE "^port $PORT$" "$ANCHOR_FILE" 2>/dev/null; then
     echo "  Firewall:  OPEN  (killport rule allows external access)"
   else
     echo "  Firewall:  CLOSED  (no killport rule — external access blocked)"
@@ -173,20 +180,31 @@ ports_inspect() {
   printf "${C}  ────────────────────────────────────────────${R}\n\n"
 
   # Firewall status
-  local fw_status fw_enabled=false
-  fw_status=$(pfctl -s info 2>/dev/null | awk '/^Status:/{print $2}' || true)
-  if [ "$fw_status" = "Enabled" ]; then
-    fw_enabled=true
-    printf "  Firewall  ${G}${B}ENABLED${R}   ${D}pfctl is active${R}\n"
+  local fw_status fw_enabled=false fw_name="firewall"
+  if command -v ufw &>/dev/null; then
+    fw_name="ufw"
+    fw_status=$(sudo ufw status 2>/dev/null | awk '/^Status:/{print $2}' || true)
+    [ "$fw_status" = "active" ] && fw_enabled=true
+  elif command -v iptables &>/dev/null; then
+    fw_name="iptables"
+    local rule_count
+    rule_count=$(sudo iptables -L INPUT --line-numbers 2>/dev/null | grep -c '^[0-9]' || true)
+    [ "${rule_count:-0}" -gt 0 ] && fw_enabled=true
+  elif command -v nft &>/dev/null; then
+    fw_name="nftables"
+    local nft_count
+    nft_count=$(sudo nft list ruleset 2>/dev/null | grep -c 'chain' || true)
+    [ "${nft_count:-0}" -gt 0 ] && fw_enabled=true
+  fi
+  if $fw_enabled; then
+    printf "  Firewall  ${G}${B}ENABLED${R}   ${D}${fw_name} is active${R}\n"
   else
-    printf "  Firewall  ${Y}${B}DISABLED${R}  ${D}pfctl is off — all listening ports may be reachable externally${R}\n"
+    printf "  Firewall  ${Y}${B}DISABLED${R}  ${D}${fw_name} is off — all listening ports may be reachable externally${R}\n"
   fi
 
   # Local LAN IP
   local lan_ip
-  lan_ip=$(ifconfig -l 2>/dev/null | tr ' ' '\n' | while read -r iface; do
-    ifconfig "$iface" 2>/dev/null | awk '/inet / && $2 != "127.0.0.1"{print $2; exit}'
-  done | head -1)
+  lan_ip=$(ip -4 addr show 2>/dev/null | awk '/inet / && $2 !~ /^127\./{gsub(/\/[0-9]+/,"",$2); print $2; exit}')
   [ -n "$lan_ip" ] && printf "  LAN IP    ${B}%s${R}\n" "$lan_ip"
 
   printf "\n  ${B}%-8s  %-14s  %-10s  %s${R}\n" "PORT" "PROCESS" "ACCESS" ""
@@ -296,17 +314,19 @@ show_ip() {
   local primary_iface primary_mac primary_ipv4 primary_ipv6 primary_status
   primary_iface="" primary_mac="" primary_ipv4="" primary_ipv6="" primary_status=""
 
-  for iface in $(ifconfig -l 2>/dev/null); do
-    info=$(ifconfig "$iface" 2>/dev/null)
+  while IFS= read -r iface; do
+    [[ "$iface" == "lo" ]] && continue
+    info=$(ip addr show "$iface" 2>/dev/null)
+    link_info=$(ip link show "$iface" 2>/dev/null)
     mac="";  ipv4="";  ipv6="";  status=""
-    mac=$(printf '%s\n'    "$info" | awk '/ether /{print $2; exit}')
-    ipv4=$(printf '%s\n'   "$info" | awk '/inet /{print $2; exit}')
-    ipv6=$(printf '%s\n'   "$info" | awk '/inet6 / && $2 !~ /%/{print $2; exit}')
-    status=$(printf '%s\n' "$info" | awk '/status:/{print $2; exit}')
+    mac=$(printf '%s\n'  "$link_info" | awk '/link\/ether /{print $2; exit}')
+    ipv4=$(printf '%s\n' "$info"      | awk '/inet / && $2 !~ /^127\./{gsub(/\/[0-9]+/,"",$2); print $2; exit}')
+    ipv6=$(printf '%s\n' "$info"      | awk '/inet6 / && $2 !~ /^::1/{gsub(/\/[0-9]+/,"",$2); print $2; exit}')
+    status=$(printf '%s\n' "$link_info" | grep -oE 'state (UP|DOWN|UNKNOWN)' | awk '{print tolower($2)}' | head -1)
     [ -z "$mac" ] && [ -z "$ipv4" ] && continue
 
-    # Reserve the first active interface with a real IPv4 as primary
-    if [ -z "$primary_iface" ] && [ "$status" = "active" ] && [ -n "$ipv4" ] && [ "$ipv4" != "127.0.0.1" ]; then
+    # Reserve the first UP interface with a real IPv4 as primary
+    if [ -z "$primary_iface" ] && [ "$status" = "up" ] && [ -n "$ipv4" ]; then
       primary_iface="$iface"; primary_mac="$mac"; primary_ipv4="$ipv4"
       primary_ipv6="$ipv6";   primary_status="$status"
       continue
@@ -318,7 +338,7 @@ show_ip() {
     [ -n "$status" ] && echo "  Status:    $status"
     [ -n "$ipv4" ]   && echo "  IPv4:      $ipv4"
     [ -n "$ipv6" ]   && echo "  IPv6:      $ipv6"
-  done
+  done < <(ls /sys/class/net/ 2>/dev/null)
 
   # Print primary (LAN) interface last, inside a box
   if [ -n "$primary_iface" ]; then
@@ -336,12 +356,12 @@ show_ip() {
   echo ""
   echo "Default Gateway"
   echo "────────────────────────────────────"
-  netstat -rn 2>/dev/null | awk '/^default/{print "  " $2; exit}'
+  ip route show default 2>/dev/null | awk '/default/{print "  " $3; exit}'
 
   echo ""
   echo "DNS Servers"
   echo "────────────────────────────────────"
-  scutil --dns 2>/dev/null | awk '/nameserver/{print "  " $3}' | sort -u
+  awk '/^nameserver/{print "  " $2}' /etc/resolv.conf 2>/dev/null | sort -u
 
   echo ""
   echo "Firewall-managed ports (killport)"
@@ -1789,17 +1809,16 @@ audit_firewall() {
   printf "${C}  ────────────────────────────────────────────${R}\n\n"
 
   local rules=""
-  printf "  ${D}Loading firewall rules...${R}"
+  printf "  ${D}Loading firewall rules...${R}\n"
   if command -v ufw &>/dev/null; then
-    rules=$(sudo ufw status verbose 2>/dev/null || true)
+    rules=$(sudo -p "  Password: " ufw status verbose 2>/dev/null || true)
   fi
   if [ -z "$rules" ] && command -v iptables &>/dev/null; then
-    rules=$(sudo iptables -L -n -v 2>/dev/null || true)
+    rules=$(sudo -p "  Password: " iptables -L -n -v 2>/dev/null || true)
   fi
   if [ -z "$rules" ] && command -v nft &>/dev/null; then
-    rules=$(sudo nft list ruleset 2>/dev/null || true)
+    rules=$(sudo -p "  Password: " nft list ruleset 2>/dev/null || true)
   fi
-  printf "\r\033[K"
 
   if [ -z "$rules" ]; then
     printf "  ${Y}No firewall rules found (or insufficient permissions).${R}\n"
