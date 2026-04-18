@@ -39,8 +39,9 @@ wget -qO /usr/local/bin/killport \
 **Option 3 — Manual**
 
 ```sh
-sudo curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/killport \
-  -o /usr/local/bin/killport && sudo chmod +x /usr/local/bin/killport
+sudo mkdir -p /usr/local/bin && \
+curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/killport \
+  -o /tmp/killport && sudo mv /tmp/killport /usr/local/bin/killport && sudo chmod +x /usr/local/bin/killport
 ```
 
 ---
