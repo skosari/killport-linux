@@ -216,6 +216,145 @@ Uninstalling killport...
 killport uninstalled.
 ```
 
+### `killport attack config`
+```
+  Attack Config
+  ────────────────────────────────────────────
+
+  Config: /home/ubuntu/.config/killport/attack.conf
+
+  Ollama Host
+  Ollama is the AI engine that runs your models locally or on another machine.
+
+    • This machine:    localhost:11434  or  127.0.0.1:11434
+    • Another LAN box: 192.168.x.x:11434  (the IP of that machine)
+    • Remote server:   45.76.x.x:11434   (must have port 11434 open)
+
+  Default port is always 11434. Press Enter to keep current value.
+
+  Current: localhost:11434
+  → 
+
+  Connecting to Ollama at localhost:11434...
+  Connected.  2 model(s) available:
+
+  ▶  1  llama3.2:latest
+     2  deepseek-r1:8b
+
+  Select model  [current: 1]
+  → 
+
+  Saved.  Host: localhost:11434  ·  Model: llama3.2:latest
+```
+
+### `killport attack 10.0.0.5`
+```
+  AI Pentest  →  10.0.0.5  (47 common ports)
+  ────────────────────────────────────────────
+
+  nmap not installed — needed for port/service scanning.
+  Install it now? (requires sudo) [Y/n] → y
+
+  ... (sudo apt-get install -y nmap) ...
+
+  Connecting to Ollama at localhost:11434...
+  Model: llama3.2:latest
+
+  Scanning 47 common ports on 10.0.0.5...
+
+  ●  22        ssh           OpenSSH 8.9p1 Ubuntu
+  ●  3306      mysql         MySQL 8.0.33
+  ●  27017     mongodb       MongoDB 6.0
+
+  Agent starting  target: 10.0.0.5  ·  model: llama3.2:latest
+
+  ▶  SCAN_PORT 3306
+  ▶  WORDLIST mysql 3306
+     ✓ root:  →  LOGIN SUCCEEDED
+  ▶  BANNER_GRAB 27017
+  ▶  WORDLIST ssh 22
+     no credentials from wordlist succeeded
+  ▶  REPORT
+
+  Building report...
+
+  ══════════════════════════════════════════════════════════════
+    SECURITY REPORT  ·  10.0.0.5  ·  2025-04-17 14:32
+    Model: llama3.2:latest
+  ══════════════════════════════════════════════════════════════
+
+    PORT 3306 — MYSQL  (MySQL 8.0.33)
+    Risk: 🔴 Critical
+    ────────────────────────────────────────────────────────────────
+    ⚠  WEAK CREDENTIAL WORKS: root:(empty)
+
+    What this means:
+      Your MySQL database has no root password set.
+      Anyone who can reach port 3306 has full admin access to all databases.
+
+    How to fix it:
+      1. Use a strong unique password for every database user
+      2. Disable remote root login: run  DELETE FROM mysql.user WHERE User='root' AND Host!='localhost';
+      3. Block port 3306 from the internet with a firewall rule
+
+    PORT 22 — SSH  (OpenSSH 8.9p1 Ubuntu)
+    Risk: 🟡 Medium
+    ────────────────────────────────────────────────────────────────
+
+    What this means:
+      SSH lets you log in remotely to manage the server.
+      If weak passwords are allowed, attackers can brute-force their way in.
+
+    How to fix it:
+      1. Disable password login — use SSH keys only
+         Edit /etc/ssh/sshd_config → set: PasswordAuthentication no
+      2. Move SSH to a non-standard port (e.g. 2222) to reduce bot noise
+      3. Install fail2ban to automatically block repeated failed logins
+
+  ══════════════════════════════════════════════════════════════
+  ── What to do first ──
+  ══════════════════════════════════════════════════════════════
+    1. [CRITICAL] Change the password on mysql (port 3306) — 'root:' works
+    2. [HIGH] Review and harden mongodb (port 27017) — see fix steps above
+
+  ────────────────────────────────────────────
+  Complete  ·  model: llama3.2:latest  ·  target: 10.0.0.5
+  Logged to: /home/ubuntu/.config/killport/attack.log
+```
+
+### `killport attack allports 10.0.0.5`
+```
+  AI Pentest  →  10.0.0.5  (all 65535 ports)
+  ────────────────────────────────────────────
+
+  Pass 1/2  Scanning 47 common ports on 10.0.0.5...
+
+  ●  22        ssh           OpenSSH 8.9p1
+  ●  3306      mysql         MySQL 8.0.33
+
+  Pass 2/2  scanning remaining 65535 ports on 10.0.0.5...
+
+  [████████████████████░░░░░░░░░░░░░░░░░░░░]  51%
+  ●  49152     unknown
+
+  [████████████████████████████████████████] 100%
+  Pass 2/2 complete.
+
+  Agent starting  target: 10.0.0.5  ·  model: llama3.2:latest
+  ...
+```
+
+### `killport attack log`
+```
+  Attack Log  /home/ubuntu/.config/killport/attack.log
+
+  ════════════════════════════════════════════════════════════
+  Time:   2025-04-17 14:32:01  |  Target: 10.0.0.5
+  Model:  llama3.2:latest      |  Ports:  47 common ports
+  ════════════════════════════════════════════════════════════
+  ... (full report) ...
+```
+
 ---
 
 ## AI Penetration Testing
