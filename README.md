@@ -55,42 +55,39 @@ curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/killpor
 | Command | Description |
 |---|---|
 | `killport` | Show help |
+| `killport config` | Configure Ollama host and model |
+| `killport update` | Update to the latest version |
+| `killport uninstall` | Remove killport and all firewall rules |
 | `killport <port>` | Kill whatever is running on that port |
-| `killport list` | List all listening ports |
-| `killport open <port>` | Open a port to external connections |
-| `killport close <port>` | Close a port from external connections |
-| `killport openports` | Show all ports open to external access |
-| `killport openports <ip>` | Probe an IP to verify which ports are reachable |
-| `killport closedports` | Show all listening ports with no external access |
 | `killport ports` | Inspect all ports with live firewall status |
 | `killport status <port>` | Show if a port is open or closed |
+| `killport list` | List all listening ports |
+| `killport open <port>` | Open a port to external connections |
+| `killport openports` | Show all ports open to external access |
+| `killport openports <ip>` | Probe an IP to verify which ports are reachable |
+| `killport close <port>` | Close a port from external connections |
+| `killport closedports` | Show all listening ports with no external access |
 | `killport ip` | Show IP addresses, DNS, and network info |
 | `killport scan` | Scan local network for all active computers |
 | `killport scan <ip>` | Scan ports on a remote host |
 | `killport scan <ip> all` | Scan all 65535 ports on a remote host |
-| `killport wol` | Wake a LAN computer (scan network or use saved hosts) |
-| `killport wol <name>` | Wake a saved host by name |
-| `killport wol <mac>` | Wake by MAC address directly |
-| `killport wol save <name> <mac> [ip]` | Save a host for quick wake |
-| `killport wol delete <name>` | Remove a saved host |
-| `killport wol list` | Show all saved WoL hosts |
 | `killport watch <port>` | Monitor live connections to a local port |
 | `killport cert <host:port>` | Inspect TLS certificate (expiry, SANs, cipher) |
 | `killport sniff <port>` | Capture and display traffic on a port |
 | `killport sniff <ip:port>` | Capture traffic to/from a specific host:port |
 | `killport vuln <ip:port>` | Detect service version + query CVE database |
-| `killport fix <ip:port>` | Detect vulns and generate/apply a hardening fix |
 | `killport audit` | Review firewall rules with plain-English findings |
 | `killport dns <domain>` | DNS recon: A/MX/TXT/NS/AXFR zone transfer test |
 | `killport forward <port> <host:port>` | Forward a local port to a remote host:port |
 | `killport stress <ip:port>` | Authorized connection flood / stress test |
-| `killport attack <ip>` | AI pentest: scan 47 common ports + analysis |
-| `killport attack allports <ip>` | AI pentest: scan all 65535 ports + analysis |
-| `killport attack <ip>:<port>` | AI pentest: single port deep dive |
-| `killport config` | Configure Ollama host and model |
+| `killport wol` | Wake a LAN computer — scan network or pick a saved host |
+| `killport wol <name>` | Wake a saved host by name |
+| `killport wol save <name> <mac> [ip]` | Save a host for quick wake |
+| `killport wol list` | Show all saved WoL hosts |
+| `killport attack <ip>` | AI pentest: scan all ports + analysis (requires Ollama) |
+| `killport attack <ip>:<port>` | AI pentest: single port deep dive (requires Ollama) |
 | `killport attack log` | View attack history |
-| `killport update` | Update to the latest version |
-| `killport uninstall` | Remove killport and all firewall rules |
+| `killport fix <ip:port>` | Detect vulns and generate/apply a hardening fix (requires Ollama) |
 
 ---
 
