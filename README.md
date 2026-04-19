@@ -15,7 +15,7 @@ Also available for [macOS](https://github.com/skosari/killport-mac) and [Windows
 
 AI-powered pentesting, vulnerability scanning, and automated hardening via [Ollama](https://ollama.com) — runs entirely on your hardware
 
-[![Version](https://img.shields.io/badge/version-1.11.6-00b4d8?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-1.11.9-00b4d8?style=flat-square)](#)
 [![Platform](https://img.shields.io/badge/platform-Linux-00b4d8?style=flat-square&logo=linux&logoColor=white)](#)
 [![Shell](https://img.shields.io/badge/shell-bash-00b4d8?style=flat-square&logo=gnubash&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-Source%20Available-00b4d8?style=flat-square)](LICENSE)
@@ -80,6 +80,8 @@ curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/killpor
 | `killport dns <domain>` | DNS recon: A/MX/TXT/NS/AXFR zone transfer test |
 | `killport forward <port> <host:port>` | Forward a local port to a remote host:port |
 | `killport stress <ip:port>` | Authorized connection flood / stress test |
+| `killport ssh` | Generate a token so another machine can SSH into this one |
+| `killport ssh ks:<token>` | Accept a token — adds their key and enables SSH access |
 | `killport wol` | Wake a LAN computer — scan network or pick a saved host |
 | `killport wol <name>` | Wake a saved host by name |
 | `killport wol save <name> <mac> [ip]` | Save a host for quick wake |
@@ -464,6 +466,50 @@ killport scan                 # discover all active hosts on local network
 killport scan 10.0.0.5        # common ports on a specific host
 killport scan 10.0.0.5 all    # all 65535 ports
 ```
+
+### SSH Easy Connect → `killport ssh`
+
+Connect two machines over SSH with a single copy-paste — no manual key copying, no `authorized_keys` editing.
+
+**On the machine you want to connect *from*:**
+
+```sh
+killport ssh
+```
+
+Generates an Ed25519 keypair (stored at `~/.killport/id_ed25519`) and outputs a self-contained token:
+
+```
+  killport ssh — Key Exchange
+  ────────────────────────────────────────────
+
+  Using existing key: ~/.killport/id_ed25519.pub
+
+  Run this on the other machine:
+
+  killport ssh ks:eyJ1c2VyIjoic2FtIiwiaXAiOiIxOTIuMTY4LjEuNDIiLCJwdWJrZXkiOiJzc2...
+
+  Then connect from this machine with:
+  ssh -i ~/.killport/id_ed25519 <their-user>@<their-ip>
+
+  Your IP on this machine: 192.168.1.42
+```
+
+**On the machine you want to connect *to* — paste the token:**
+
+```sh
+killport ssh ks:<token>
+```
+
+```
+  ✓ Key added to ~/.ssh/authorized_keys
+  From: sam@192.168.1.42
+
+  They can now connect with:
+  ssh -i ~/.killport/id_ed25519 sam@192.168.1.55
+```
+
+The token is self-contained — it encodes your public key, username, and IP as base64 JSON. No server, no pastebin, no manual file editing. Works Linux↔Linux, Linux↔Mac, and Mac↔Mac.
 
 ### Wake on LAN → `killport wol`
 
