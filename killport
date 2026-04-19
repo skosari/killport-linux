@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.10.8"
+VERSION="1.11.0"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
@@ -1554,13 +1554,118 @@ stress_dispatch() {
   stress_run "$sub"
 }
 
+# ── Network Host Discovery (shared by scan + wol) ────────
+_NET_PIDS=()
+NET_SCAN_BASE=""
+NET_SCAN_HOSTS=()
+
+_net_detect_base() {
+  local myip
+  myip=$(ip route get 8.8.8.8 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
+  [ -z "$myip" ] && myip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [ -z "$myip" ] && return 1
+  NET_SCAN_BASE=$(printf '%s' "$myip" | cut -d. -f1-3)
+}
+
+_mac_norm() {
+  local raw=$1 a b c d e f
+  IFS=: read -r a b c d e f <<< "$raw"
+  printf '%02x:%02x:%02x:%02x:%02x:%02x' \
+    $(( 16#$a )) $(( 16#$b )) $(( 16#$c )) \
+    $(( 16#$d )) $(( 16#$e )) $(( 16#$f ))
+}
+
+_net_progress_bar() {
+  local done=$1 total=$2 found=$3
+  [ "$total" -eq 0 ] && return
+  local C=$'\033[0;36m' D=$'\033[2m' R=$'\033[0m'
+  local pct=$(( done * 100 / total ))
+  local filled=$(( done * 30 / total ))
+  local empty=$(( 30 - filled ))
+  local bar="" i=0
+  while [ "$i" -lt "$filled" ]; do bar+="█"; i=$(( i + 1 )); done
+  i=0
+  while [ "$i" -lt "$empty" ]; do bar+="░"; i=$(( i + 1 )); done
+  printf "\r  ${C}[%s]${R}  ${D}%3d%%  %d host(s) found${R}   " \
+    "$bar" "$pct" "$found"
+}
+
+net_scan_hosts() {
+  local G=$'\033[0;32m' D=$'\033[2m' R=$'\033[0m' Y=$'\033[0;33m'
+
+  _net_detect_base || {
+    printf "  ${Y}Could not determine local subnet.${R}\n\n"
+    NET_SCAN_HOSTS=(); return 1
+  }
+  NET_SCAN_HOSTS=()
+  _NET_PIDS=()
+
+  local _tmpdir
+  _tmpdir=$(mktemp -d)
+  mkdir "$_tmpdir/done" "$_tmpdir/proc"
+  local _total=254
+
+  for i in $(seq 1 254); do
+    ( ping -c1 -W1 "${NET_SCAN_BASE}.${i}" &>/dev/null || true
+      touch "$_tmpdir/done/$i" ) &
+  done
+
+  local -a _shown=("$@")
+  local _found=0 _total_done=0 _f _i _ip _mac _arp_line
+
+  _net_progress_bar 0 "$_total" 0
+
+  while true; do
+    for _f in "$_tmpdir/done/"*; do
+      [ -f "$_f" ] || continue
+      mv "$_f" "$_tmpdir/proc/" 2>/dev/null || continue
+      _total_done=$(( _total_done + 1 ))
+      _i=$(basename "$_f")
+      _ip="${NET_SCAN_BASE}.${_i}"
+
+      _skip=0
+      for _sm in "${_shown[@]+"${_shown[@]}"}"; do [ "$_sm" = "$_ip" ] && _skip=1; done
+      [ "$_skip" -eq 1 ] && continue
+
+      _arp_line=$(arp -n "$_ip" 2>/dev/null || true)
+      _mac=$(printf '%s' "$_arp_line" | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' | head -1 || true)
+      [ -z "$_mac" ] && continue
+
+      _mac=$(_mac_norm "$_mac")
+      (( _found++ )) || true
+      _shown+=("$_ip")
+      NET_SCAN_HOSTS+=("? ${_ip} ${_mac}")
+      printf "\r\033[2K  ${G}%-30s${R}  %-15s  ${D}%s${R}\n" "?" "$_ip" "$_mac"
+      _net_progress_bar "$_total_done" "$_total" "$_found"
+    done
+
+    _net_progress_bar "$_total_done" "$_total" "$_found"
+    [ "$_total_done" -ge "$_total" ] && break
+    sleep 0.1
+  done
+
+  wait 2>/dev/null || true
+  rm -rf "$_tmpdir" 2>/dev/null || true
+  printf "\r\033[2K"
+}
+
 # ── scan ─────────────────────────────────────────────────
 
 scan_run() {
   local target="${1:-}" mode="${2:-}"
   local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m'
   local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
-  [ -z "$target" ] && { printf "\n  ${Y}Usage: killport scan <ip> [all]${R}\n\n"; return 1; }
+  if [ -z "$target" ]; then
+    printf "\n${B}${C}  killport scan${R}  ${D}local network${R}\n"
+    printf "${C}  ────────────────────────────────────────────${R}\n\n"
+    net_scan_hosts
+    if [ "${#NET_SCAN_HOSTS[@]}" -eq 0 ]; then
+      printf "  ${Y}No hosts found on the local network.${R}\n\n"
+    else
+      printf "\n  ${D}%d host(s) found on %s.0/24${R}\n\n" "${#NET_SCAN_HOSTS[@]}" "$NET_SCAN_BASE"
+    fi
+    return
+  fi
   command -v nmap &>/dev/null || { printf "\n  ${Y}nmap required:  apt install nmap${R}\n\n"; return 1; }
 
   printf "\n${B}${C}  killport scan${R}  ${D}%s${R}\n" "$target"
@@ -2373,7 +2478,8 @@ if [ $# -eq 0 ]; then
   echo "  killport openports <ip>    probe an IP from this machine to check open ports"
   echo "  killport status <port>     show if a port is open or closed"
   echo "  killport ip                show IP addresses, DNS, and network info"
-  echo "  killport scan <ip>         scan ports on a remote host (no AI)"
+  echo "  killport scan              scan local network for all active computers"
+  echo "  killport scan <ip>         scan ports on a remote host"
   echo "  killport scan <ip> all     scan all 65535 ports on a remote host"
   echo "  killport watch <port>      monitor live connections to a local port"
   echo "  killport cert <host:port>  inspect TLS certificate (expiry, SANs, cipher)"
@@ -2395,6 +2501,258 @@ if [ $# -eq 0 ]; then
   exit 0
 fi
 
+# ── Wake on LAN ──────────────────────────────────────────
+
+WOL_HOSTS="${HOME}/.config/killport/wol_hosts"
+
+wol_send() {
+  local mac="$1" ip="${2:-255.255.255.255}"
+  mac=$(printf '%s' "$mac" | tr '[:upper:]' '[:lower:]' | tr '-' ':')
+  if ! [[ "$mac" =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]]; then
+    printf "  Invalid MAC address: %s\n" "$mac"; return 1
+  fi
+  python3 - "$mac" "$ip" <<'PYEOF'
+import sys, socket
+mac = sys.argv[1]
+ip  = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] != '255.255.255.255' else '<broadcast>'
+mac_bytes = bytes.fromhex(mac.replace(':',''))
+magic = b'\xff'*6 + mac_bytes*16
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    s.sendto(magic, ('<broadcast>', 9))
+    if ip != '<broadcast>':
+        s.sendto(magic, (ip, 9))
+print("ok")
+PYEOF
+}
+
+wol_load_hosts() {
+  WOL_SAVED=()
+  [ -f "$WOL_HOSTS" ] || return 0
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" =~ ^# ]] && continue
+    WOL_SAVED+=("$line")
+  done < "$WOL_HOSTS"
+}
+
+wol_save_host() {
+  local name="$1" mac="$2" ip="${3:-}"
+  mac=$(printf '%s' "$mac" | tr '[:upper:]' '[:lower:]' | tr '-' ':')
+  if ! [[ "$mac" =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]]; then
+    printf "  Invalid MAC: %s\n" "$mac"; return 1
+  fi
+  mkdir -p "${HOME}/.config/killport"
+  local tmp=""
+  [ -f "$WOL_HOSTS" ] && tmp=$(grep -v "^${name} " "$WOL_HOSTS" 2>/dev/null || true)
+  printf '%s\n' "$tmp" > "$WOL_HOSTS"
+  printf '%s %s %s\n' "$name" "$mac" "$ip" >> "$WOL_HOSTS"
+}
+
+wol_dispatch() {
+  local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m' RE=$'\033[0;31m'
+  local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+  local subcmd="${1:-}"
+
+  case "$subcmd" in
+    save)
+      local name="${2:-}" mac="${3:-}" ip="${4:-}"
+      [ -z "$name" ] || [ -z "$mac" ] && { printf "  Usage: killport wol save <name> <mac> [ip]\n"; exit 1; }
+      wol_save_host "$name" "$mac" "$ip" && printf "  ${G}Saved:${R} %s  %s\n\n" "$name" "$mac"
+      ;;
+    delete|remove)
+      local name="${2:-}"
+      [ -z "$name" ] && { printf "  Usage: killport wol delete <name>\n"; exit 1; }
+      if [ -f "$WOL_HOSTS" ]; then
+        local tmp; tmp=$(grep -v "^${name} " "$WOL_HOSTS" 2>/dev/null || true)
+        printf '%s\n' "$tmp" > "$WOL_HOSTS"
+        printf "  ${G}Removed:${R} %s\n\n" "$name"
+      else
+        printf "  ${Y}No saved hosts file found.${R}\n\n"
+      fi
+      ;;
+    list)
+      wol_load_hosts
+      printf "\n${B}${C}  Saved WoL Hosts${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+      if [ "${#WOL_SAVED[@]}" -eq 0 ]; then
+        printf "  ${D}None. Use 'killport wol save <name> <mac> [ip]' to add one.${R}\n\n"
+        return
+      fi
+      for entry in "${WOL_SAVED[@]+"${WOL_SAVED[@]}"}"; do
+        local n m i
+        n=$(printf '%s' "$entry" | awk '{print $1}')
+        m=$(printf '%s' "$entry" | awk '{print $2}')
+        i=$(printf '%s' "$entry" | awk '{print $3}')
+        printf "  ${G}★${R}  ${B}%-20s${R}  %s  ${D}%s${R}\n" "$n" "$m" "$i"
+      done
+      printf "\n"
+      ;;
+    ""|scan)
+      stty sane 2>/dev/null || true
+      printf "\n${B}${C}  Wake on LAN${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+
+      wol_load_hosts
+
+      local -a _entries=() _skip_macs=()
+      local _count=0
+
+      for entry in "${WOL_SAVED[@]+"${WOL_SAVED[@]}"}"; do
+        local sn sm si
+        sn=$(printf '%s' "$entry" | awk '{print $1}')
+        sm=$(printf '%s' "$entry" | awk '{print $2}')
+        si=$(printf '%s' "$entry" | awk '{print $3}')
+        (( _count++ )) || true
+        _entries+=("$sm|$si|$sn")
+        _skip_macs+=("$sm")
+        printf "  ${B}%2d${R}  ${G}★${R} ${B}%-22s${R}  %s  ${D}%s${R}\n" "$_count" "$sn" "$sm" "$si"
+      done
+      [ "${#WOL_SAVED[@]}" -gt 0 ] && printf "\n"
+
+      _net_detect_base || { printf "  ${Y}Could not determine local subnet.${R}\n\n"; return; }
+      printf "  ${D}Scanning %s — type a number + Enter to wake immediately${R}\n\n" "$NET_SCAN_BASE"
+
+      local _tmpdir
+      _tmpdir=$(mktemp -d)
+      mkdir "$_tmpdir/done" "$_tmpdir/proc"
+      local _total=254
+      NET_SCAN_HOSTS=()
+
+      for i in $(seq 1 254); do
+        ( ping -c1 -W1 "${NET_SCAN_BASE}.${i}" &>/dev/null || true
+          touch "$_tmpdir/done/$i" ) &
+      done
+
+      local _found=0 _total_done=0 _f _i _ip _mac _arp_line _early=""
+
+      _net_progress_bar 0 "$_total" "$_count"
+
+      while true; do
+        for _f in "$_tmpdir/done/"*; do
+          [ -f "$_f" ] || continue
+          mv "$_f" "$_tmpdir/proc/" 2>/dev/null || continue
+          _total_done=$(( _total_done + 1 ))
+          _i=$(basename "$_f")
+          _ip="${NET_SCAN_BASE}.${_i}"
+
+          _skip=0
+          for _sm in "${_skip_macs[@]+"${_skip_macs[@]}"}"; do [ "$_sm" = "$_ip" ] && _skip=1; done
+          [ "$_skip" -eq 1 ] && continue
+
+          _arp_line=$(arp -n "$_ip" 2>/dev/null || true)
+          _mac=$(printf '%s' "$_arp_line" | grep -oE '([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}' | head -1 || true)
+          [ -z "$_mac" ] && continue
+
+          _mac=$(_mac_norm "$_mac")
+          (( _count++ )) || true; (( _found++ )) || true
+          _skip_macs+=("$_ip")
+          _entries+=("$_mac|$_ip|?")
+          NET_SCAN_HOSTS+=("? ${_ip} ${_mac}")
+          printf "\r\033[2K  ${B}%2d${R}  %-30s  %-15s  ${D}%s${R}\n" "$_count" "?" "$_ip" "$_mac"
+          _net_progress_bar "$_total_done" "$_total" "$_count"
+        done
+
+        _net_progress_bar "$_total_done" "$_total" "$_count"
+
+        if read -r -t 0 2>/dev/null; then
+          IFS= read -r _early 2>/dev/null || true
+          _early=$(printf '%s' "$_early" | tr -d '[:space:]')
+          if [[ "$_early" =~ ^[0-9]+$ ]] && [ "$_early" -ge 1 ] && [ "$_early" -le "$_count" ]; then
+            printf "\r\033[2K"
+            break
+          fi
+          _early=""
+        fi
+
+        [ "$_total_done" -ge "$_total" ] && break
+        sleep 0.1
+      done
+
+      wait 2>/dev/null || true
+      rm -rf "$_tmpdir" 2>/dev/null || true
+      printf "\r\033[2K"
+
+      if [ "${#_entries[@]}" -eq 0 ]; then
+        printf "  ${Y}No hosts found.${R}\n\n"
+        printf "  ${D}Add a known host:  killport wol save <name> <mac> [ip]${R}\n\n"
+        return
+      fi
+
+      local _sel
+      if [ -n "$_early" ]; then
+        _sel="$_early"
+      else
+        printf "\n  ${D}Enter number to wake, or 's <num> <name>' to save a host:${R}\n  → "
+        read -r _sel; _sel="${_sel%$'\r'}"
+      fi
+
+      if [[ "$_sel" =~ ^s[[:space:]]+([0-9]+)[[:space:]]+(.+)$ ]]; then
+        local s_idx="${BASH_REMATCH[1]}" s_name="${BASH_REMATCH[2]}"
+        if [ "$s_idx" -ge 1 ] && [ "$s_idx" -le "${#_entries[@]}" ]; then
+          local e="${_entries[$(( s_idx - 1 ))]}"
+          local e_mac="${e%%|*}" e_rest="${e#*|}" e_ip="${e_rest%%|*}"
+          wol_save_host "$s_name" "$e_mac" "$e_ip"
+          printf "  ${G}Saved as '%s'. Waking now...${R}\n" "$s_name"
+          _sel="$s_idx"
+        else
+          printf "  ${Y}Invalid number.${R}\n\n"; return
+        fi
+      fi
+
+      if [[ "$_sel" =~ ^[0-9]+$ ]] && [ "$_sel" -ge 1 ] && [ "$_sel" -le "${#_entries[@]}" ]; then
+        local e="${_entries[$(( _sel - 1 ))]}"
+        local e_mac="${e%%|*}" e_rest="${e#*|}" e_ip="${e_rest%%|*}" e_name="${e_rest#*|}"
+        printf "\n  Waking ${B}%s${R}  ${D}%s${R}  %s\n" "$e_name" "$e_mac" "$e_ip"
+        if wol_send "$e_mac" "$e_ip" 2>/dev/null | grep -q ok; then
+          printf "  ${G}Magic packet sent.${R}\n\n"
+        else
+          printf "  ${RE}Failed to send magic packet (is python3 installed?).${R}\n\n"
+        fi
+      else
+        printf "  ${D}Cancelled.${R}\n\n"
+      fi
+      ;;
+    *)
+      wol_load_hosts
+      local found_mac="" found_ip=""
+      for entry in "${WOL_SAVED[@]+"${WOL_SAVED[@]}"}"; do
+        local n m i
+        n=$(printf '%s' "$entry" | awk '{print $1}')
+        m=$(printf '%s' "$entry" | awk '{print $2}')
+        i=$(printf '%s' "$entry" | awk '{print $3}')
+        if [ "$n" = "$subcmd" ]; then found_mac="$m"; found_ip="$i"; fi
+      done
+      if [ -n "$found_mac" ]; then
+        printf "\n  Waking ${B}%s${R}  ${D}%s${R}\n" "$subcmd" "$found_mac"
+        if wol_send "$found_mac" "$found_ip" 2>/dev/null | grep -q ok; then
+          printf "  ${G}Magic packet sent.${R}\n\n"
+        else
+          printf "  ${RE}Failed to send magic packet.${R}\n\n"
+        fi
+        return
+      fi
+      if [[ "$subcmd" =~ ^([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$ ]]; then
+        printf "\n  Waking ${B}%s${R}\n" "$subcmd"
+        if wol_send "$subcmd" 2>/dev/null | grep -q ok; then
+          printf "  ${G}Magic packet sent.${R}\n\n"
+        else
+          printf "  ${RE}Failed to send magic packet.${R}\n\n"
+        fi
+        return
+      fi
+      printf "  No saved host named '%s'.\n" "$subcmd"
+      printf "  Usage:\n"
+      printf "    killport wol              scan network + pick a host to wake\n"
+      printf "    killport wol <name>       wake a saved host by name\n"
+      printf "    killport wol <mac>        wake by MAC address directly\n"
+      printf "    killport wol save <name> <mac> [ip]\n"
+      printf "    killport wol delete <name>\n"
+      printf "    killport wol list\n\n"
+      exit 1
+      ;;
+  esac
+}
+
 case "$1" in
 
   config)
@@ -2411,6 +2769,10 @@ case "$1" in
 
   scan)
     scan_run "${2:-}" "${3:-}"
+    ;;
+
+  wol)
+    wol_dispatch "${2:-}" "${3:-}" "${4:-}" "${5:-}"
     ;;
 
   watch)
