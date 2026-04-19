@@ -25,7 +25,7 @@ banner() {
     "${C}██║  ██╗██║███████╗███████╗██║     ╚██████╔╝██║  ██╗   ██║   ${R}" \
     "${C}╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═╝      ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ${R}"
   printf "\n"
-  printf "  ${D}https://github.com/skosari/killport-mac${R}\n"
+  printf "  ${D}https://github.com/skosari/killport-linux${R}\n"
   printf "\n"
 }
 
@@ -2495,6 +2495,10 @@ if [ $# -eq 0 ]; then
   echo "  killport config     configure Ollama host and model"
   echo "  killport attack log        view attack history"
   echo "  killport stress <ip:port>  authorized connection flood / stress test"
+  echo "  killport wol               wake a LAN computer (scan network or use saved hosts)"
+  echo "  killport wol <name>        wake a saved host by name"
+  echo "  killport wol save <n> <mac> [ip]  save a host for quick wake"
+  echo "  killport wol list          show saved WoL hosts"
   echo "  killport update            update to the latest version"
   echo "  killport uninstall         remove killport and all firewall rules"
   echo ""
