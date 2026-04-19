@@ -2690,7 +2690,7 @@ wol_dispatch() {
         local s_idx="${BASH_REMATCH[1]}" s_name="${BASH_REMATCH[2]}"
         if [ "$s_idx" -ge 1 ] && [ "$s_idx" -le "${#_entries[@]}" ]; then
           local e="${_entries[$(( s_idx - 1 ))]}"
-          local e_mac="${e%%|*}" e_rest="${e#*|}" e_ip="${e_rest%%|*}"
+          local e_mac="${e%%|*}"; local e_rest="${e#*|}"; local e_ip="${e_rest%%|*}"
           wol_save_host "$s_name" "$e_mac" "$e_ip"
           printf "  ${G}Saved as '%s'. Waking now...${R}\n" "$s_name"
           _sel="$s_idx"
@@ -2701,7 +2701,7 @@ wol_dispatch() {
 
       if [[ "$_sel" =~ ^[0-9]+$ ]] && [ "$_sel" -ge 1 ] && [ "$_sel" -le "${#_entries[@]}" ]; then
         local e="${_entries[$(( _sel - 1 ))]}"
-        local e_mac="${e%%|*}" e_rest="${e#*|}" e_ip="${e_rest%%|*}" e_name="${e_rest#*|}"
+        local e_mac="${e%%|*}"; local e_rest="${e#*|}"; local e_ip="${e_rest%%|*}"; local e_name="${e_rest#*|}"
         printf "\n  Waking ${B}%s${R}  ${D}%s${R}  %s\n" "$e_name" "$e_mac" "$e_ip"
         if wol_send "$e_mac" "$e_ip" 2>/dev/null | grep -q ok; then
           printf "  ${G}Magic packet sent.${R}\n\n"
