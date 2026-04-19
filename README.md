@@ -15,7 +15,7 @@ Also available for [macOS](https://github.com/skosari/killport-mac) and [Windows
 
 AI-powered pentesting, vulnerability scanning, and automated hardening via [Ollama](https://ollama.com) — runs entirely on your hardware
 
-[![Version](https://img.shields.io/badge/version-1.10.3-00b4d8?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-1.11.0-00b4d8?style=flat-square)](#)
 [![Platform](https://img.shields.io/badge/platform-Linux-00b4d8?style=flat-square&logo=linux&logoColor=white)](#)
 [![Shell](https://img.shields.io/badge/shell-bash-00b4d8?style=flat-square&logo=gnubash&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-Source%20Available-00b4d8?style=flat-square)](LICENSE)
@@ -65,8 +65,15 @@ curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/killpor
 | `killport ports` | Inspect all ports with live firewall status |
 | `killport status <port>` | Show if a port is open or closed |
 | `killport ip` | Show IP addresses, DNS, and network info |
-| `killport scan <ip>` | Scan ports on a remote host (no AI) |
+| `killport scan` | Scan local network for all active computers |
+| `killport scan <ip>` | Scan ports on a remote host |
 | `killport scan <ip> all` | Scan all 65535 ports on a remote host |
+| `killport wol` | Wake a LAN computer (scan network or use saved hosts) |
+| `killport wol <name>` | Wake a saved host by name |
+| `killport wol <mac>` | Wake by MAC address directly |
+| `killport wol save <name> <mac> [ip]` | Save a host for quick wake |
+| `killport wol delete <name>` | Remove a saved host |
+| `killport wol list` | Show all saved WoL hosts |
 | `killport watch <port>` | Monitor live connections to a local port |
 | `killport cert <host:port>` | Inspect TLS certificate (expiry, SANs, cipher) |
 | `killport sniff <port>` | Capture and display traffic on a port |
@@ -154,6 +161,19 @@ Killed.
   ○  5432     postgres        blocked
 ```
 
+### `killport scan`
+```
+  killport scan  local network
+  ────────────────────────────────────────────
+
+  ?                               192.168.1.1      48:22:54:4f:3b:25
+  ?                               192.168.1.10     10:ff:e0:23:9b:44
+  ?                               192.168.1.22     4c:20:b8:ab:36:10
+  [████████████████████████████░░]   93%  3 host(s) found
+
+  3 host(s) found on 192.168.1.0/24
+```
+
 ### `killport scan 10.0.0.5`
 ```
   killport scan  10.0.0.5
@@ -169,6 +189,26 @@ Killed.
   6379     redis               Redis key-value store
 
   Host latency: 0.0008 s latency
+```
+
+### `killport wol`
+```
+  Wake on LAN
+  ────────────────────────────────────────────
+
+   1  ★ htpc                   10:ff:e0:23:9b:44  192.168.1.10
+
+  Scanning 192.168.1 — type a number + Enter to wake immediately
+
+   2  ?                        192.168.1.1      48:22:54:4f:3b:25
+   3  ?                        192.168.1.22     4c:20:b8:ab:36:10
+  [██████████████████████████████]  100%  3 host(s) found
+
+  Enter number to wake, or 's <num> <name>' to save a host:
+  → 1
+
+  Waking htpc  10:ff:e0:23:9b:44  192.168.1.10
+  Magic packet sent.
 ```
 
 ### `killport watch 3000`
@@ -418,9 +458,25 @@ Supports: SSH, Redis, MySQL, PostgreSQL, MongoDB, Nginx/Apache, FTP, Telnet, Mem
 ### Port Scanner → `killport scan`
 
 ```sh
-killport scan 10.0.0.5        # common ports
+killport scan                 # discover all active hosts on local network
+killport scan 10.0.0.5        # common ports on a specific host
 killport scan 10.0.0.5 all    # all 65535 ports
 ```
+
+### Wake on LAN → `killport wol`
+
+Boot any machine on your LAN remotely by sending a magic packet:
+
+```sh
+killport wol                           # scan network, pick a host to wake
+killport wol htpc                      # wake saved host by name
+killport wol 10:ff:e0:23:9b:44         # wake by MAC directly
+killport wol save htpc 10:ff:e0:23:9b:44 192.168.1.10   # save a host
+killport wol list                      # show saved hosts
+killport wol delete htpc               # remove a saved host
+```
+
+Saved hosts are stored in `~/.config/killport/wol_hosts` and appear at the top of the interactive scan. Magic packets are sent via Python3's built-in socket — no extra dependencies.
 
 ### TLS Certificate Inspector → `killport cert`
 
