@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.11.5"
+VERSION="1.11.6"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
@@ -53,10 +53,10 @@ list_ports() {
       if(NF>=6 && $6~/^users:/) {
         u=$6
         tmp=u; sub(/^users:\(\("/, "", tmp); sub(/".*/, "", tmp); cmd=tmp
-        pids=""; tmp=u
-        while(match(tmp, /pid=([0-9]+)/, m)) {
-          pids=(pids=="")?m[1]:pids","m[1]
-          tmp=substr(tmp,RSTART+RLENGTH)
+        np=split(u, parts, "pid="); pids=""
+        for(i=2; i<=np; i++) {
+          p=parts[i]; sub(/[^0-9].*/, "", p)
+          if(p!="") pids=(pids=="")?p:pids","p
         }
         if(pids!="") {
           n=split(pids,ps,","); firstpid=ps[1]
