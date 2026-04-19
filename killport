@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.11.1"
+VERSION="1.11.2"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
@@ -2461,7 +2461,8 @@ if [ $# -eq 0 ]; then
   banner
   _remote=$(fetch_remote_version 2)
   _CY=$'\033[0;33m' _CR=$'\033[0m' _CD=$'\033[2m'
-  if [ -n "$_remote" ] && [ "$_remote" != "$VERSION" ]; then
+  if [ -n "$_remote" ] && [ "$_remote" != "$VERSION" ] && \
+     [ "$(printf '%s\n' "$VERSION" "$_remote" | sort -V | tail -1)" = "$_remote" ]; then
     echo "  v${VERSION}  ${_CY}→  v${_remote} available${_CR}  ${_CD}(run: killport update)${_CR}"
   else
     echo "  v${VERSION}"
