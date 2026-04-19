@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.11.3"
+VERSION="1.11.4"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
@@ -32,50 +32,42 @@ banner() {
 list_ports() {
   local B=$'\033[1;34m' C=$'\033[0;36m' D=$'\033[2m' R=$'\033[0m' W=$'\033[1;37m'
 
-  printf "\n${B}  %-7s  %-24s  %-22s  %s${R}\n" "PORT" "ADDRESS" "PROCESS" "PID(S)"
-  printf "  ${D}───────  ────────────────────────  ──────────────────────  ──────────────${R}\n"
-
-  local data
-  data=$(sudo lsof -iTCP -iUDP -sTCP:LISTEN -P -n 2>/dev/null | awk 'NR>1 {
-    addr=$9; cmd=$1; pid=$2
-    n=split(addr,a,":"); port=a[n]+0
-    host=""; for(i=1;i<n;i++) host=(i==1)?a[i]:host":"a[i]
-    if(host=="") host="*"
-    gkey=host SUBSEP port SUBSEP cmd
-    pkey=gkey SUBSEP pid
-    if(!(pkey in pseen)) {
-      pseen[pkey]=1
-      if(!(gkey in gseen)) {
-        gseen[gkey]=1
-        ord[++nk]=gkey; ph[gkey]=host; pp[gkey]=port; pc[gkey]=cmd
-        plist[gkey]=pid
-      } else {
-        plist[gkey]=plist[gkey]","pid
-      }
-    }
-  }
-  END {
-    for(i=1;i<=nk;i++) {
-      k=ord[i]
-      n=split(plist[k],ps,",")
-      pidstr=(n<=3)?plist[k]:ps[1]" (+"(n-1)" more)"
-      printf "%07d\t%s\t%d\t%s\t%s\t%s\n", pp[k], ph[k], pp[k], pc[k], ps[1], pidstr
-    }
-  }' | sort -n)
-
-  if [ -z "$data" ]; then
-    printf "\n  ${D}No listening ports found.${R}\n\n"; return
-  fi
+  printf "\n${B}  %-7s  %-16s  %-24s  %s${R}\n" "PORT" "PID(S)" "ADDRESS" "PROCESS"
+  printf "  ${D}───────  ────────────────  ────────────────────────  ──────────────────────${R}\n"
 
   local count=0
-  while IFS=$'\t' read -r _s host port cmd firstpid pidstr; do
+  while IFS=$'\t' read -r _s port pidstr host cmd; do
     local fullname
-    fullname=$(ps -p "$firstpid" -o comm= 2>/dev/null | head -1 || true)
+    fullname=$(ps -p "${pidstr%%[^0-9]*}" -o comm= 2>/dev/null | head -1 || true)
     [ -z "$fullname" ] && fullname="$cmd"
-    printf "  ${C}%-7s${R}  ${D}%-24s${R}  ${W}%-22s${R}  ${D}%s${R}\n" "$port" "$host" "$fullname" "$pidstr"
+    printf "  ${C}%-7s${R}  ${D}%-16s${R}  ${D}%-24s${R}  ${W}%s${R}\n" "$port" "$pidstr" "$host" "$fullname"
     (( count++ )) || true
-  done <<< "$data"
+  done < <({ sudo ss -tlnp 2>/dev/null | tail -n +2; sudo ss -ulnp 2>/dev/null | tail -n +2; } | awk '
+    $1=="LISTEN"||$1=="UNCONN" {
+      addr=$4
+      n=split(addr,a,":"); port=a[n]+0
+      host=""; for(i=1;i<n;i++) host=(i==1)?a[i]:host":"a[i]
+      if(host=="0.0.0.0"||host=="[::]"||host=="") host="*"
+      cmd="-"; firstpid="-"; pidstr="-"
+      if(NF>=6 && $6~/^users:/) {
+        u=$6
+        tmp=u; sub(/^users:\(\("/, "", tmp); sub(/".*/, "", tmp); cmd=tmp
+        pids=""; tmp=u
+        while(match(tmp, /pid=([0-9]+)/, m)) {
+          pids=(pids=="")?m[1]:pids","m[1]
+          tmp=substr(tmp,RSTART+RLENGTH)
+        }
+        if(pids!="") {
+          n=split(pids,ps,","); firstpid=ps[1]
+          pidstr=(n<=3)?pids:ps[1]" (+"(n-1)" more)"
+        }
+      }
+      printf "%07d\t%d\t%s\t%s\t%s\n", port, port, pidstr, host, cmd
+    }' | sort -n | uniq)
 
+  if [ "$count" -eq 0 ]; then
+    printf "\n  ${D}No listening ports found.${R}\n\n"; return
+  fi
   printf "\n  ${D}%d service(s) listening${R}\n\n" "$count"
 }
 
