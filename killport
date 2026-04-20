@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.11.19"
+VERSION="1.11.20"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
@@ -357,16 +357,16 @@ show_ip() {
 
   # Determine the interface used for the default gateway route
   local gw_iface
-  gw_iface=$(ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
+  gw_iface=$(ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}' || true)
 
   while IFS= read -r iface; do
     [[ "$iface" == "lo" ]] && continue
     info=$(ip addr show "$iface" 2>/dev/null)
     link_info=$(ip link show "$iface" 2>/dev/null)
     mac="";  ipv4="";  ipv6="";  status=""
-    mac=$(printf '%s\n'  "$link_info" | awk '/link\/ether /{print $2; exit}')
-    ipv4=$(printf '%s\n' "$info"      | awk '/inet / && $2 !~ /^127\./{gsub(/\/[0-9]+/,"",$2); print $2; exit}')
-    ipv6=$(printf '%s\n' "$info"      | awk '/inet6 / && $2 !~ /^::1/{gsub(/\/[0-9]+/,"",$2); print $2; exit}')
+    mac=$(printf '%s\n'  "$link_info" | awk '/link\/ether /{print $2; exit}' || true)
+    ipv4=$(printf '%s\n' "$info"      | awk '/inet / && $2 !~ /^127\./{gsub(/\/[0-9]+/,"",$2); print $2; exit}' || true)
+    ipv6=$(printf '%s\n' "$info"      | awk '/inet6 / && $2 !~ /^::1/{gsub(/\/[0-9]+/,"",$2); print $2; exit}' || true)
     status=$(printf '%s\n' "$link_info" | grep -oE 'state (UP|DOWN|UNKNOWN)' | awk '{print tolower($2)}' | head -1)
     [ -z "$mac" ] && [ -z "$ipv4" ] && continue
 
@@ -406,7 +406,7 @@ show_ip() {
   echo ""
   echo "Default Gateway"
   echo "────────────────────────────────────"
-  ip route show default 2>/dev/null | awk '/default/{print "  " $3; exit}'
+  ip route show default 2>/dev/null | awk '/default/{print "  " $3; exit}' || true
 
   echo ""
   echo "DNS Servers"
@@ -2546,11 +2546,16 @@ if [ $# -eq 0 ]; then
   echo "  killport wol save <n> <mac> [ip]  save a host for quick wake"
   echo "  killport wol list          show saved WoL hosts"
   echo ""
-  echo "  *** SHUTDOWN ***"
+  echo "  *** SHUTDOWN & RESTART ***"
+  echo "  killport setup             interactive pro setup wizard (Ollama, SSH, tools)"
   echo "  killport shutdown          scan network and pick a machine to shut down"
   echo "  killport shutdown <ip>     shut down a remote machine via SSH"
   echo "  killport shutdown <name>   shut down a saved host by name"
   echo "  killport shutdown list     show all saved shutdown hosts"
+  echo "  killport restart           scan network and pick a machine to restart"
+  echo "  killport restart <ip>      restart a remote machine via SSH"
+  echo "  killport restart <name>    restart a saved host by name"
+  echo "  killport restart list      show all saved shutdown/restart hosts"
   echo ""
   echo "  *** TRAFFIC MONITORING ***"
   echo "  killport watch <port>        Monitor live connections to a local port"
@@ -3204,6 +3209,303 @@ shutdown_dispatch() {
   fi
 }
 
+# ── Setup Wizard ──────────────────────────────────────────────────────────────
+
+setup_wizard() {
+  local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m' RE=$'\033[0;31m'
+  local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+  stty sane 2>/dev/null || true
+
+  attack_load_conf
+  local SETUP_OLLAMA="$ATTACK_OLLAMA"
+  local SETUP_MODEL="$ATTACK_MODEL"
+  local _setup_score=0
+  local -a _setup_done=()
+
+  printf "\n${B}${C}  ╔══════════════════════════════════════════════════════════╗${R}\n"
+  printf "${B}${C}  ║       killport · Pro Setup Wizard (Linux)                ║${R}\n"
+  printf "${B}${C}  ╚══════════════════════════════════════════════════════════╝${R}\n\n"
+  printf "  ${D}Configures: Ollama AI  ·  SSH keys  ·  Required tools${R}\n\n"
+  printf "  ${D}Press Enter to skip any step. Ctrl+C to quit anytime.${R}\n\n"
+  printf "  Press Enter to begin → "; read -r _ </dev/tty
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 1 — OLLAMA
+  # ═══════════════════════════════════════════════════════════════════════════
+  printf "\n${B}${C}  ┌─ Step 1 of 3 · Ollama AI ──────────────────────────────────┐${R}\n\n"
+  printf "  ${D}Ollama powers killport attack, fix, and AI features.${R}\n\n"
+
+  local _tags_json
+  _tags_json=$(curl -sf --max-time 4 "http://${SETUP_OLLAMA}/api/tags" 2>/dev/null || true)
+
+  if [ -n "$_tags_json" ]; then
+    local -a _model_names=()
+    while IFS= read -r _mn; do [ -n "$_mn" ] && _model_names+=("$_mn"); done \
+      < <(printf '%s' "$_tags_json" | python3 -c "
+import json,sys
+for m in json.load(sys.stdin).get('models',[]): print(m['name'])" 2>/dev/null || true)
+    printf "  ${G}✓ Ollama reachable at %s${R}\n" "$SETUP_OLLAMA"
+    if [ "${#_model_names[@]}" -gt 0 ]; then
+      [ -z "$SETUP_MODEL" ] && SETUP_MODEL="${_model_names[0]}"
+      printf "  ${D}Models:  %s${R}\n" "$(IFS=', '; echo "${_model_names[*]}")"
+      printf "  ${D}Active:  %s${R}\n\n" "${SETUP_MODEL:-auto}"
+      _setup_done+=("Ollama · ${SETUP_OLLAMA} · model: ${SETUP_MODEL:-auto}")
+      (( _setup_score++ )) || true
+    else
+      printf "  ${Y}⚠  No models loaded.${R}  ${D}Pull one: ollama pull llama3.2${R}\n\n"
+    fi
+    printf "  Change Ollama host or model? [y/N] → "; read -r _ch </dev/tty
+    if [[ "$_ch" =~ ^[Yy]$ ]]; then
+      attack_config
+      attack_load_conf
+      SETUP_OLLAMA="$ATTACK_OLLAMA"
+      SETUP_MODEL="$ATTACK_MODEL"
+    fi
+  else
+    printf "  ${Y}⚠  Ollama not found at %s${R}\n\n" "$SETUP_OLLAMA"
+    printf "  ${D}Install: https://ollama.com  then: ollama serve${R}\n"
+    printf "  ${D}Or enter a different host (e.g. another machine on your LAN):${R}\n\n"
+    printf "  Enter Ollama host or press Enter to skip → "; read -r _h </dev/tty
+    _h="${_h%$'\r'}"
+    if [ -n "$_h" ]; then
+      SETUP_OLLAMA="$_h"
+      local _test_json
+      _test_json=$(curl -sf --max-time 4 "http://${SETUP_OLLAMA}/api/tags" 2>/dev/null || true)
+      if [ -n "$_test_json" ]; then
+        ATTACK_OLLAMA="$SETUP_OLLAMA"; attack_save_conf
+        printf "  ${G}✓ Connected and saved.${R}\n\n"
+        _setup_done+=("Ollama · ${SETUP_OLLAMA}")
+        (( _setup_score++ )) || true
+      else
+        printf "  ${RE}✗ Could not reach Ollama at %s — skipping.${R}\n\n" "$SETUP_OLLAMA"
+        SETUP_OLLAMA=""
+      fi
+    else
+      printf "  ${D}Skipped. Configure later: killport config${R}\n\n"
+    fi
+  fi
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 2 — SSH KEY SETUP
+  # ═══════════════════════════════════════════════════════════════════════════
+  printf "\n${B}${C}  ┌─ Step 2 of 3 · SSH Keys ────────────────────────────────────┐${R}\n\n"
+  printf "  ${D}Set up passwordless SSH from this machine to others on your network.${R}\n\n"
+
+  local _kp_dir="$HOME/.killport"
+  local _key_file="$_kp_dir/id_ed25519"
+  local _pub_file="$_kp_dir/id_ed25519.pub"
+
+  if [ -f "$_key_file" ]; then
+    printf "  ${G}✓ killport SSH key exists: %s${R}\n\n" "$_key_file"
+    _setup_done+=("SSH key · ${_key_file}")
+    (( _setup_score++ )) || true
+  else
+    printf "  ${D}No killport SSH key found. Generate one now? [Y/n]${R} → "; read -r _genkey </dev/tty
+    if [[ ! "$_genkey" =~ ^[Nn]$ ]]; then
+      mkdir -p "$_kp_dir" && chmod 700 "$_kp_dir"
+      ssh-keygen -t ed25519 -f "$_key_file" -N "" -C "killport@$(hostname -s 2>/dev/null || echo linux)" -q
+      printf "  ${G}✓ Key created: %s${R}\n\n" "$_key_file"
+      _setup_done+=("SSH key · generated ${_key_file}")
+      (( _setup_score++ )) || true
+    else
+      printf "  ${D}Skipped.${R}\n\n"
+    fi
+  fi
+
+  if [ -f "$_pub_file" ]; then
+    printf "  Copy this key to another machine (enter its IP/host, or Enter to skip):\n"
+    printf "  Host → "; read -r _target </dev/tty; _target="${_target%$'\r'}"
+    if [ -n "$_target" ]; then
+      printf "  User on %s [%s] → " "$_target" "$(whoami)"; read -r _tuser </dev/tty; _tuser="${_tuser%$'\r'}"
+      [ -z "$_tuser" ] && _tuser="$(whoami)"
+      printf "\n  ${D}Running: ssh-copy-id -i %s %s@%s${R}\n\n" "$_pub_file" "$_tuser" "$_target"
+      ssh-copy-id -i "$_pub_file" "${_tuser}@${_target}" && {
+        printf "  ${G}✓ Key copied. Test: ssh -i %s %s@%s${R}\n\n" "$_key_file" "$_tuser" "$_target"
+        _setup_done+=("SSH · key installed on ${_tuser}@${_target}")
+        (( _setup_score++ )) || true
+      } || printf "  ${RE}✗ ssh-copy-id failed. Try manually.${R}\n\n"
+    fi
+  fi
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STEP 3 — TOOLS CHECK
+  # ═══════════════════════════════════════════════════════════════════════════
+  printf "\n${B}${C}  ┌─ Step 3 of 3 · Required Tools ─────────────────────────────┐${R}\n\n"
+  printf "  ${D}killport works best with nmap and sshpass installed.${R}\n\n"
+
+  local _tools_ok=1
+  for _tool in nmap sshpass; do
+    if command -v "$_tool" &>/dev/null; then
+      printf "  ${G}✓${R}  %-10s  ${D}installed${R}\n" "$_tool"
+    else
+      printf "  ${Y}✗${R}  %-10s  ${D}not found${R}\n" "$_tool"
+      _tools_ok=0
+    fi
+  done
+  printf "\n"
+
+  if [ "$_tools_ok" -eq 0 ]; then
+    printf "  Install missing tools? [Y/n] → "; read -r _inst </dev/tty
+    if [[ ! "$_inst" =~ ^[Nn]$ ]]; then
+      if command -v apt-get &>/dev/null; then
+        sudo apt-get install -y nmap sshpass 2>&1 | grep -E "^(Get|Setting|Unpacking|Selecting)" | sed 's/^/  /'
+      elif command -v dnf &>/dev/null; then
+        sudo dnf install -y nmap sshpass 2>&1 | sed 's/^/  /'
+      elif command -v yum &>/dev/null; then
+        sudo yum install -y nmap sshpass 2>&1 | sed 's/^/  /'
+      else
+        printf "  ${Y}Unknown package manager — install nmap and sshpass manually.${R}\n"
+      fi
+      printf "\n"
+      _setup_done+=("Tools · nmap + sshpass installed")
+      (( _setup_score++ )) || true
+    fi
+  else
+    _setup_done+=("Tools · all present")
+    (( _setup_score++ )) || true
+  fi
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SUMMARY
+  # ═══════════════════════════════════════════════════════════════════════════
+  printf "\n${B}${C}  ┌─ Setup Complete ────────────────────────────────────────────┐${R}\n\n"
+
+  if [ "${#_setup_done[@]}" -gt 0 ]; then
+    printf "  ${G}Configured ($_setup_score item(s)):${R}\n\n"
+    for _item in "${_setup_done[@]}"; do
+      printf "    ${G}✓${R}  %s\n" "$_item"
+    done
+    printf "\n"
+  else
+    printf "  ${D}Nothing new configured. Run 'killport setup' anytime.${R}\n\n"
+  fi
+
+  printf "  ${D}Quick reference:${R}\n\n"
+  printf "    ${C}killport attack <ip>${R}       ${D}AI pentest (requires Ollama)${R}\n"
+  printf "    ${C}killport fix <ip:port>${R}     ${D}AI-generated fix${R}\n"
+  printf "    ${C}killport scan <ip>${R}         ${D}port scan${R}\n"
+  printf "    ${C}killport shutdown <ip>${R}     ${D}shut down a remote machine${R}\n"
+  printf "    ${C}killport restart <ip>${R}      ${D}restart a remote machine${R}\n"
+  printf "    ${C}killport audit${R}             ${D}firewall review${R}\n"
+  printf "    ${C}killport config${R}            ${D}configure Ollama${R}\n"
+  printf "    ${C}killport setup${R}             ${D}re-run this wizard${R}\n\n"
+
+  printf "  ${G}Done.${R}  ${D}Run 'killport setup' anytime to update your configuration.${R}\n\n"
+}
+
+# ── Restart Dispatch ──────────────────────────────────────────────────────────
+
+restart_dispatch() {
+  local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m' RE=$'\033[0;31m'
+  local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+  local subcmd="${1:-}"
+
+  local KP_DIR="$HOME/.killport"
+  local KEY_FILE="$KP_DIR/id_ed25519"
+  local SD_KNOWN="$KP_DIR/shutdown_hosts"
+
+  _rd_load() {
+    [ -f "$SD_KNOWN" ] || return
+    grep -v '^\s*$\|^#' "$SD_KNOWN" 2>/dev/null || true
+  }
+
+  _rd_ensure_key() {
+    if [ ! -f "$KEY_FILE" ]; then
+      printf "  ${D}No SSH key found — generating one...${R}\n"
+      mkdir -p "$KP_DIR"
+      ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "killport@$(hostname -s 2>/dev/null || echo local)" &>/dev/null
+      printf "  ${G}✓ SSH key created: %s${R}\n\n" "$KEY_FILE"
+    fi
+  }
+
+  _rd_do_restart() {
+    local os="$1" ip="$2" user="$3"
+    _rd_ensure_key
+    local cmd
+    case "$os" in
+      mac|linux) cmd="sudo shutdown -r now" ;;
+      windows)   cmd="shutdown /r /t 0 /f" ;;
+    esac
+    printf "  ${D}Sending restart to %s@%s (%s)...${R}\n\n" "$user" "$ip" "$os"
+    local err_file; err_file=$(mktemp)
+    if ! ssh -i "$KEY_FILE" -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+         -o BatchMode=yes "${user}@${ip}" "$cmd" 2>"$err_file"; then
+      local err; err=$(cat "$err_file")
+      if printf '%s' "$err" | grep -qi "permission denied\|publickey\|authentication failed"; then
+        printf "  ${Y}Key auth failed.${R}\n\n"
+        printf "  Run on ${C}%s${R}: ${C}killport ssh ks:<your-token>${R}\n\n" "$ip"
+        printf "  ${D}Set up SSH first: killport ssh${R}\n\n"
+      else
+        printf "  ${RE}✗ Failed to reach %s: %s${R}\n\n" "$ip" "$err"
+      fi
+    else
+      printf "  ${G}✓ Restart sent to %s${R}\n\n" "$ip"
+    fi
+    rm -f "$err_file"
+  }
+
+  case "$subcmd" in
+    list)
+      printf "\n${B}${C}  Saved Shutdown/Restart Hosts${R}\n\n"
+      local _data; _data=$(_rd_load)
+      if [ -z "$_data" ]; then
+        printf "  ${D}No saved hosts. Add one with: killport restart <ip>${R}\n\n"
+        return
+      fi
+      printf "  ${D}%-16s  %-8s  %-18s  %s${R}\n" "NAME" "OS" "IP" "USER"
+      printf "  ────────────────────────────────────────────────\n"
+      while IFS='|' read -r _n _o _i _u _d; do
+        printf "  ${C}%-16s${R}  %-8s  %-18s  %s\n" "$_n" "$_o" "$_i" "$_u"
+      done <<< "$_data"
+      printf "\n"
+      return
+      ;;
+    "")
+      printf "\n${B}${C}  Remote Restart${R}\n\n"
+      printf "  ${D}Scanning your local network...${R}\n\n"
+      local _subnet _prefix
+      _subnet=$(ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}' || true)
+      _prefix=$(ip -4 addr show "$_subnet" 2>/dev/null | awk '/inet /{gsub(/\.[0-9]+\/.*/,"",$2); print $2}' || true)
+      if [ -z "$_prefix" ]; then
+        printf "  ${Y}Could not detect subnet. Enter IP directly below.${R}\n\n"
+      else
+        printf "  ${D}Subnet: %s.0/24${R}\n\n" "$_prefix"
+      fi
+      printf "  Enter IP of machine to restart → "; read -r _ip </dev/tty; _ip="${_ip%$'\r'}"
+      [ -z "$_ip" ] && { printf "  ${D}Cancelled.${R}\n\n"; return; }
+      printf "  OS (mac/linux/windows) [linux] → "; read -r _os </dev/tty; _os="${_os%$'\r'}"
+      [ -z "$_os" ] && _os="linux"
+      printf "  Username on %s [%s] → " "$_ip" "$(whoami)"; read -r _user </dev/tty; _user="${_user%$'\r'}"
+      [ -z "$_user" ] && _user="$(whoami)"
+      printf "\n"
+      _rd_do_restart "$_os" "$_ip" "$_user"
+      return
+      ;;
+  esac
+
+  # Named host lookup
+  local _data; _data=$(_rd_load)
+  if [ -n "$_data" ]; then
+    while IFS='|' read -r _n _o _i _u _d; do
+      if [ "$_n" = "$subcmd" ]; then
+        printf "\n${B}${C}  Remote Restart  →  %s  (%s)${R}\n\n" "$_n" "$_i"
+        _rd_do_restart "$_o" "$_i" "$_u"
+        return
+      fi
+    done <<< "$_data"
+  fi
+
+  # Treat as IP
+  local _ip="$subcmd"
+  printf "\n${B}${C}  Remote Restart  →  %s${R}\n\n" "$_ip"
+  printf "  OS (mac/linux/windows) [linux] → "; read -r _os </dev/tty; _os="${_os%$'\r'}"
+  [ -z "$_os" ] && _os="linux"
+  printf "  Username on %s [%s] → " "$_ip" "$(whoami)"; read -r _user </dev/tty; _user="${_user%$'\r'}"
+  [ -z "$_user" ] && _user="$(whoami)"
+  printf "\n"
+  _rd_do_restart "$_os" "$_ip" "$_user"
+}
+
 case "$1" in
 
   config)
@@ -3222,8 +3524,16 @@ case "$1" in
     scan_run "${2:-}" "${3:-}"
     ;;
 
+  setup)
+    setup_wizard
+    ;;
+
   shutdown)
     shutdown_dispatch "${2:-}"
+    ;;
+
+  restart)
+    restart_dispatch "${2:-}"
     ;;
 
   ssh)
