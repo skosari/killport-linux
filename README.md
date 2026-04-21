@@ -94,6 +94,7 @@ curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/killpor
 | `killport sniff <port>` | Capture and display traffic on a port |
 | `killport ssh` | Generate a token so another machine can SSH into this one |
 | `killport ssh <name>` | SSH to a saved connection using your key |
+| `killport ssh <name> <new-ip>` | Update the saved IP for a connection (e.g. after DHCP change) |
 | `killport ssh ks:<token>` | Accept a token — adds their key and enables SSH access |
 | `killport ssh list` | Show all saved SSH connections |
 | `killport ssh delete <name>` | Remove a saved SSH connection |
@@ -532,9 +533,10 @@ The token is self-contained — it encodes your public key, username, and IP as 
 **After accepting, the connection is saved by name.** Look it up any time without memorising IPs:
 
 ```sh
-killport ssh list                  # see all saved connections
-killport ssh sams-laptop           # connect using saved key
-killport ssh delete sams-laptop    # remove a saved connection
+killport ssh list                        # see all saved connections
+killport ssh sams-laptop                 # connect using saved key
+killport ssh sams-laptop 192.168.1.55   # update IP if it changed (no re-pairing needed)
+killport ssh delete sams-laptop          # remove a saved connection
 ```
 
 ```
