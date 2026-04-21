@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.11.23"
+VERSION="1.11.24"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
@@ -1963,53 +1963,153 @@ audit_firewall() {
   printf "\n${B}${C}  killport audit${R}  ${D}firewall rule review${R}\n"
   printf "${C}  ────────────────────────────────────────────${R}\n\n"
 
-  local rules=""
-  printf "  ${D}Loading firewall rules...${R}\n"
+  local rules="" fw_name=""
+  printf "  ${D}Loading firewall rules...${R}"
+
+  if grep -qi "Status: inactive" <(sudo -p $'\n  Password: ' ufw status 2>/dev/null || true) 2>/dev/null; then
+    printf "\r  ${RE}✗  UFW is INACTIVE — firewall is disabled!${R}\n\n"; return 0
+  fi
   if command -v ufw &>/dev/null; then
-    rules=$(sudo -p "  Password: " ufw status verbose 2>/dev/null || true)
+    rules=$(sudo -p $'\n  Password: ' ufw status verbose 2>/dev/null || true)
+    fw_name="ufw"
   fi
   if [ -z "$rules" ] && command -v iptables &>/dev/null; then
-    rules=$(sudo -p "  Password: " iptables -L -n -v 2>/dev/null || true)
+    rules=$(sudo -p $'\n  Password: ' iptables -L INPUT -n -v 2>/dev/null || true)
+    fw_name="iptables"
   fi
   if [ -z "$rules" ] && command -v nft &>/dev/null; then
-    rules=$(sudo -p "  Password: " nft list ruleset 2>/dev/null || true)
+    rules=$(sudo -p $'\n  Password: ' nft list ruleset 2>/dev/null || true)
+    fw_name="nftables"
   fi
 
   if [ -z "$rules" ]; then
-    printf "  ${Y}No firewall rules found (or insufficient permissions).${R}\n"
-    printf "  ${D}Try: sudo killport audit${R}\n\n"; return 0
+    printf "\r  ${Y}No rules found — try: sudo killport audit${R}\n\n"; return 0
   fi
 
-  printf "  ${B}Rules:${R}\n\n"
-  while IFS= read -r line; do [ -n "$line" ] && printf "  ${D}  %s${R}\n" "$line"; done <<< "$rules"
-  printf "\n  ${B}Findings:${R}\n\n"
+  local total; total=$(echo "$rules" | grep -c . || true)
+  printf "\r  ${D}%d lines loaded (%s).%20s${R}\n" "$total" "$fw_name" ""
 
-  local findings=0
-  # Catch-all accept
-  if grep -qiE "ACCEPT|pass all" <<< "$rules" && ! grep -qiE "DROP|REJECT|DENY" <<< "$rules"; then
-    printf "  ${RE}⚠  All traffic appears to be accepted — no drop/reject rules found.${R}\n"; findings=1; fi
-  # UFW disabled
-  if grep -qi "Status: inactive" <<< "$rules"; then
-    printf "  ${RE}⚠  UFW is INACTIVE — firewall is disabled!${R}\n"; findings=1; fi
-  # Dangerous ports
-  for dp_port in 3306 5432 6379 27017 9200 11211; do
-    if grep -qE "\b${dp_port}\b" <<< "$rules"; then
-      local sn=""
-      case "$dp_port" in 3306) sn="MySQL";; 5432) sn="PostgreSQL";;
-        6379) sn="Redis";; 27017) sn="MongoDB";; 9200) sn="Elasticsearch";; 11211) sn="Memcached";; esac
-      printf "  ${Y}⚠  Port %s (%s) referenced — confirm it's restricted to trusted IPs.${R}\n" "$dp_port" "$sn"
-      findings=1
+  # Check if a port is currently listening
+  _kp_listening() { ss -tlnp 2>/dev/null | grep -qE ":${1}[[:space:]]" || \
+                    netstat -tlnp 2>/dev/null | grep -qE ":${1}[[:space:]]"; }
+
+  declare -A danger_names=([21]="FTP" [22]="SSH" [23]="Telnet" [25]="SMTP" [53]="DNS"
+    [139]="NetBIOS" [445]="SMB" [1433]="MSSQL" [3306]="MySQL" [3389]="RDP"
+    [5432]="PostgreSQL" [5900]="VNC" [6379]="Redis" [8080]="HTTP-Alt"
+    [9200]="Elasticsearch" [11211]="Memcached" [27017]="MongoDB")
+
+  local high_count=0 first_high=1 i=0
+  local -a mediums=()
+
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    # Skip headers / chain declarations / comment lines
+    echo "$line" | grep -qiE "^Chain |^target |^pkts|^----|^To |^Status|^Logging|^Default|^New prof|^\s*$" && continue
+    (( i++ )) || true
+    printf "\r  ${D}Analysing %d / %d ...${R}   " "$i" "$total"
+
+    local is_high=0 is_medium=0 port_info="ALL PORTS" remote_info="Any IP" reason=""
+
+    # UFW: "ALLOW IN   Anywhere" lines
+    if [ "$fw_name" = "ufw" ]; then
+      echo "$line" | grep -qiE "ALLOW" || continue
+      local is_anywhere=0
+      echo "$line" | grep -qiE "Anywhere" && is_anywhere=1
+      local dp svc
+      for dp in "${!danger_names[@]}"; do
+        if echo "$line" | grep -qE "\b${dp}\b" && [ "$is_anywhere" -eq 1 ]; then
+          svc="${danger_names[$dp]}"
+          port_info="$dp ($svc)"
+          local live_note=""; _kp_listening "$dp" && live_note=" — CURRENTLY LISTENING"
+          reason="$svc allowed from Anywhere$live_note"
+          if _kp_listening "$dp"; then is_high=1; else is_medium=1; fi
+          break
+        fi
+      done
+      if [ "$is_high" -eq 0 ] && [ "$is_medium" -eq 0 ] && [ "$is_anywhere" -eq 1 ] \
+          && ! echo "$line" | grep -qiE "\b[0-9]+\b"; then
+        is_high=1; reason="Allows ALL ports from Anywhere"
+      fi
+
+    # iptables: "ACCEPT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:PORT"
+    elif [ "$fw_name" = "iptables" ]; then
+      echo "$line" | grep -qiE "^[[:space:]]*ACCEPT" || continue
+      local src; src=$(echo "$line" | awk '{print $8}' 2>/dev/null || true)
+      local is_any_src=0
+      [ "$src" = "0.0.0.0/0" ] || [ "$src" = "anywhere" ] && is_any_src=1
+      local dp svc
+      for dp in "${!danger_names[@]}"; do
+        if echo "$line" | grep -qE "dpt:${dp}\b" && [ "$is_any_src" -eq 1 ]; then
+          svc="${danger_names[$dp]}"
+          port_info="$dp ($svc)"
+          local live_note=""; _kp_listening "$dp" && live_note=" — CURRENTLY LISTENING"
+          reason="$svc accepted from any source$live_note"
+          if _kp_listening "$dp"; then is_high=1; else is_medium=1; fi
+          break
+        fi
+      done
+      # ACCEPT all from anywhere with no port filter
+      if [ "$is_high" -eq 0 ] && [ "$is_medium" -eq 0 ] && [ "$is_any_src" -eq 1 ] \
+          && echo "$line" | grep -qiE "ACCEPT\s+all" && ! echo "$line" | grep -qiE "ctstate|state"; then
+        is_high=1; reason="ACCEPT all from any source with no port restriction"
+      fi
+
+    # nftables: "accept" statements
+    elif [ "$fw_name" = "nftables" ]; then
+      echo "$line" | grep -qiE "\baccept\b" || continue
+      local dp svc
+      for dp in "${!danger_names[@]}"; do
+        if echo "$line" | grep -qE "\b${dp}\b"; then
+          svc="${danger_names[$dp]}"
+          port_info="$dp ($svc)"
+          local live_note=""; _kp_listening "$dp" && live_note=" — CURRENTLY LISTENING"
+          local src_note=""; echo "$line" | grep -qiE "saddr" || src_note=" from any"
+          reason="$svc accepted$src_note$live_note"
+          if _kp_listening "$dp"; then is_high=1; else is_medium=1; fi
+          break
+        fi
+      done
     fi
-  done
-  # Rate limiting
-  if grep -qiE "limit|hashlimit|recent|connlimit" <<< "$rules"; then
-    printf "  ${G}✓  Rate limiting rules found.${R}\n"
-  else
-    printf "  ${Y}⚠  No rate limiting detected — consider brute-force protection (fail2ban).${R}\n"
-    findings=1
+
+    if [ "$is_high" -eq 1 ]; then
+      printf "\r%-55s\r\n" ""
+      if [ "$first_high" -eq 1 ]; then
+        printf "\n  ${RE}── HIGH RISK ${R}\n\n"; first_high=0
+      fi
+      printf "  ${RE}✗  %.80s${R}\n" "$line"
+      printf "     ${D}%-18s${R} %s\n" "Port:" "$port_info"
+      printf "     ${D}%-18s${R} %s\n" "Allowed from:" "$remote_info"
+      printf "     ${Y}→ %s${R}\n\n" "$reason"
+      (( high_count++ )) || true
+    elif [ "$is_medium" -eq 1 ]; then
+      mediums+=("${port_info}|${remote_info}|${reason}|${line}")
+    fi
+  done <<< "$rules"
+
+  [ "$high_count" -eq 0 ] && printf "\r  ${D}Analysed %d lines.%30s${R}\n" "$i" ""
+
+  if [ "${#mediums[@]}" -gt 0 ]; then
+    printf "\n  ${Y}── MEDIUM RISK (%d rules) ${R}\n\n" "${#mediums[@]}"
+    for entry in "${mediums[@]}"; do
+      IFS='|' read -r p_ rem_ rsn_ line_ <<< "$entry"
+      printf "  ${Y}⚠  %.80s${R}\n" "$line_"
+      printf "     ${D}%-18s${R} %s\n" "Port:" "$p_"
+      printf "     ${D}%-18s${R} %s\n" "Allowed from:" "$rem_"
+      printf "     ${D}→ %s${R}\n\n" "$rsn_"
+    done
   fi
-  [ "$findings" -eq 0 ] && printf "  ${G}✓  No critical issues detected.${R}\n"
-  printf "\n  ${D}Run 'killport ports' to cross-reference currently exposed ports.${R}\n\n"
+
+  printf "${C}  ────────────────────────────────────────────${R}\n\n"
+
+  local total_findings=$(( high_count + ${#mediums[@]} ))
+  if [ "$total_findings" -eq 0 ]; then
+    printf "  ${G}✓  No significant issues detected across %d rules.${R}\n" "$i"
+  else
+    printf "  ${RE}%d high${R}  ·  ${Y}%d medium${R}  ·  %d rules OK\n" \
+      "$high_count" "${#mediums[@]}" "$(( i - total_findings ))"
+    printf "  ${D}Run 'killport openports' to see which ports are reachable from outside.${R}\n"
+  fi
+  printf "\n"
 }
 
 # ── dns ──────────────────────────────────────────────────
