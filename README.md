@@ -15,7 +15,7 @@ Also available for [macOS](https://github.com/skosari/killport-mac) · [Windows]
 
 AI-powered pentesting, vulnerability scanning, and automated hardening via [Ollama](https://ollama.com) — runs entirely on your hardware
 
-[![Version](https://img.shields.io/badge/version-1.11.20-00b4d8?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-1.11.21-00b4d8?style=flat-square)](#)
 [![Platform](https://img.shields.io/badge/platform-Linux-00b4d8?style=flat-square&logo=linux&logoColor=white)](#)
 [![Shell](https://img.shields.io/badge/shell-bash-00b4d8?style=flat-square&logo=gnubash&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-Source%20Available-00b4d8?style=flat-square)](LICENSE)
@@ -63,6 +63,10 @@ curl -fsSL https://raw.githubusercontent.com/skosari/killport-linux/main/killpor
 | `killport cert <host:port>` | Inspect TLS certificate (expiry, SANs, cipher) |
 | `killport close <port>` | Close a port from external connections |
 | `killport closedports` | Show all listening ports with no external access |
+| `killport code` | Launch opencode AI coding assistant with your saved Ollama config |
+| `killport code <model>` | Launch opencode with a specific Ollama model |
+| `killport code model` | Pick a model from your Ollama library |
+| `killport code install` | Install opencode |
 | `killport config` | Configure Ollama host and model |
 | `killport dns <domain>` | DNS recon: A/MX/TXT/NS/AXFR zone transfer test |
 | `killport fix <ip:port>` | Detect vulns and generate/apply a hardening fix (requires Ollama) |
