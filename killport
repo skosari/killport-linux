@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.11.24"
+VERSION="1.11.25"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
@@ -3126,6 +3126,7 @@ print(json.dumps({'user': sys.argv[1], 'ip': sys.argv[2], 'pubkey': sys.argv[3]}
   printf "  ${D}the connection and enable SSH in both directions.${R}\n\n"
   printf "  Return token (ks:...) or Enter to skip → "; read -r _return_token </dev/tty
   _return_token="${_return_token%$'\r'}"
+  _return_token="${_return_token#killport ssh }"
   if [[ "$_return_token" == ks:* ]]; then
     ssh_dispatch "$_return_token"
   else
