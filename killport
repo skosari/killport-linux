@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.11.27"
+VERSION="1.11.28"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
