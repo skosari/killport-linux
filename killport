@@ -4006,53 +4006,256 @@ case "$1" in
     ;;
 
   uninstall)
-    # Check for saved data
-    _kp_data_files=()
-    for _f in \
-      "$HOME/.config/killport/wol_hosts" \
-      "$HOME/.config/killport/attack.conf" \
-      "$HOME/.config/killport/attack.log" \
-      "$HOME/.killport/ssh_known" \
-      "$HOME/.killport/shutdown_hosts" \
-      "$HOME/.killport/id_ed25519"; do
-      [ -f "$_f" ] && _kp_data_files+=("$_f")
-    done
+    _C=$'\033[0;36m'; _G=$'\033[0;32m'; _Y=$'\033[0;33m'; _RE=$'\033[0;31m'
+    _D=$'\033[2m'; _B=$'\033[1m'; _R=$'\033[0m'
 
-    _keep_data=true
-    if [ ${#_kp_data_files[@]} -gt 0 ]; then
-      printf "\n  Saved data found:\n"
-      for _f in "${_kp_data_files[@]}"; do printf "    %s\n" "$_f"; done
-      printf "\n  Keep saved connections, hosts, and logs? [Y/n] "
-      read -r _ans </dev/tty
-      [ "$(printf '%s' "$_ans" | tr '[:upper:]' '[:lower:]')" = "n" ] && _keep_data=false
+    _secure_rm() {
+      local _f="$1"
+      [ -f "$_f" ] || return 0
+      if command -v shred &>/dev/null; then
+        shred -uzn 3 "$_f"
+      else
+        python3 -c "
+import os, pathlib
+p = pathlib.Path('$_f')
+size = p.stat().st_size
+with open(p, 'r+b') as fh:
+    for _ in range(3):
+        fh.seek(0); fh.write(os.urandom(size)); fh.flush(); os.fsync(fh.fileno())
+" 2>/dev/null || true
+        rm -f "$_f"
+      fi
+    }
+
+    _ask() {
+      printf "%s [y/N] → " "$1"
+      read -r _a </dev/tty
+      [[ "${_a:-n}" =~ ^[Yy]$ ]]
+    }
+
+    _linux_pkg_manager() {
+      if   command -v apt-get &>/dev/null; then echo "apt-get"
+      elif command -v dnf     &>/dev/null; then echo "dnf"
+      elif command -v yum     &>/dev/null; then echo "yum"
+      fi
+    }
+
+    _linux_remove_pkg() {
+      local _pm; _pm=$(_linux_pkg_manager)
+      case "$_pm" in
+        apt-get) sudo apt-get remove -y "$1" 2>/dev/null ;;
+        dnf)     sudo dnf remove -y "$1" 2>/dev/null ;;
+        yum)     sudo yum remove -y "$1" 2>/dev/null ;;
+        *)       printf "  ${_Y}No package manager found — remove %s manually.${_R}\n" "$1" ;;
+      esac
+    }
+
+    printf "\n${_B}${_C}  killport uninstall${_R}\n"
+    printf "${_C}  ────────────────────────────────────────────${_R}\n\n"
+
+    # ── Section 1: Installed tools ───────────────────────────
+    printf "  ${_B}Installed tools${_R}\n\n"
+
+    _tools_remove_browser=false
+    _tools_remove_nmap=false
+    _tools_remove_sshpass=false
+    _tools_remove_hashcat=false
+    _tools_remove_john=false
+    _found_any_tool=false
+
+    if command -v browser-harness &>/dev/null || [ -d "$HOME/browser-harness" ]; then
+      _found_any_tool=true
+      printf "  ${_Y}●${_R}  browser-harness"
+      command -v browser-harness &>/dev/null && printf "  ${_D}%s${_R}" "$(command -v browser-harness)"
+      [ -d "$HOME/browser-harness" ] && printf "  ${_D}+ ~/browser-harness${_R}"
+      printf "\n"
+      _ask "      Uninstall browser-harness?" && _tools_remove_browser=true
       printf "\n"
     fi
 
-    echo "Uninstalling killport..."
-    INSTALL_PATH=$(command -v killport)
-    if [ -f "$INSTALL_PATH" ]; then
-      sudo rm "$INSTALL_PATH"
-      echo "  Removed $INSTALL_PATH"
-    fi
-    if command -v ufw &>/dev/null; then
-      sudo ufw status numbered 2>/dev/null | grep -oP '(?<=# )killport-\S+' | while read -r rule; do
-        sudo ufw delete "$rule" 2>/dev/null || true
-      done
-    elif command -v firewall-cmd &>/dev/null; then
-      firewall-cmd --list-ports --permanent 2>/dev/null | tr ' ' '\n' | while read -r port; do
-        sudo firewall-cmd --permanent --remove-port="$port" 2>/dev/null || true
-      done
-      sudo firewall-cmd --reload 2>/dev/null || true
+    if command -v nmap &>/dev/null; then
+      _found_any_tool=true
+      printf "  ${_Y}●${_R}  nmap  ${_D}$(command -v nmap)${_R}\n"
+      _ask "      Uninstall nmap?" && _tools_remove_nmap=true
+      printf "\n"
     fi
 
-    if [ "$_keep_data" = false ]; then
-      [ -d "$HOME/.config/killport" ] && rm -rf "$HOME/.config/killport" && echo "  Removed $HOME/.config/killport"
-      [ -d "$HOME/.killport" ]        && rm -rf "$HOME/.killport"        && echo "  Removed $HOME/.killport"
-      echo "killport uninstalled. No trace left."
-    else
-      echo "killport uninstalled."
-      echo "  Your data is preserved — reinstalling will pick it up automatically."
+    if command -v sshpass &>/dev/null; then
+      _found_any_tool=true
+      printf "  ${_Y}●${_R}  sshpass  ${_D}$(command -v sshpass)${_R}\n"
+      _ask "      Uninstall sshpass?" && _tools_remove_sshpass=true
+      printf "\n"
     fi
+
+    if command -v hashcat &>/dev/null; then
+      _found_any_tool=true
+      printf "  ${_Y}●${_R}  hashcat  ${_D}$(command -v hashcat)${_R}\n"
+      _ask "      Uninstall hashcat?" && _tools_remove_hashcat=true
+      printf "\n"
+    fi
+
+    if command -v john &>/dev/null; then
+      _found_any_tool=true
+      printf "  ${_Y}●${_R}  john  ${_D}$(command -v john)${_R}\n"
+      _ask "      Uninstall john?" && _tools_remove_john=true
+      printf "\n"
+    fi
+
+    [ "$_found_any_tool" = false ] && printf "  ${_D}none found${_R}\n\n"
+
+    # ── Section 2: Saved data & config ───────────────────────
+    printf "  ${_B}Saved data & config${_R}\n\n"
+
+    _file_paths=()
+    _file_decisions=()
+    _file_sensitive=()
+
+    _print_and_ask_file() {
+      local _label="$1" _path="$2" _note="${3:-}" _sens="${4:-0}"
+      [ -e "$_path" ] || return 0
+      printf "  ${_Y}●${_R}  %-44s${_D}%s${_R}\n" "$_label" "$_note"
+      _file_paths+=("$_path")
+      _file_sensitive+=("$_sens")
+      if [ "$_sens" = "1" ]; then
+        if _ask "      Delete? (sensitive — requires confirmation)"; then
+          printf "  ${_RE}  This will permanently destroy %s via 3-pass overwrite.${_R}\n" "$_path"
+          if _ask "      Are you sure? This cannot be undone"; then
+            _file_decisions+=("y")
+          else
+            printf "  ${_D}  Kept.${_R}\n"
+            _file_decisions+=("n")
+          fi
+        else
+          _file_decisions+=("n")
+        fi
+      else
+        if _ask "      Delete?"; then
+          _file_decisions+=("y")
+        else
+          _file_decisions+=("n")
+        fi
+      fi
+      printf "\n"
+    }
+
+    _print_and_ask_file "attack.conf  (Ollama host + model)"    "$HOME/.config/killport/attack.conf"
+    _print_and_ask_file "attack.log   (pentest history)"        "$HOME/.config/killport/attack.log"
+    _print_and_ask_file "wol_hosts    (Wake-on-LAN hosts)"      "$HOME/.config/killport/wol_hosts"
+    _print_and_ask_file "ssh_known    (saved SSH connections)"  "$HOME/.killport/ssh_known"
+    _print_and_ask_file "shutdown_hosts"                        "$HOME/.killport/shutdown_hosts"
+    _print_and_ask_file "id_ed25519   (SSH private key)"        "$HOME/.killport/id_ed25519"    "⚠  3-pass secure erase" "1"
+    _print_and_ask_file "id_ed25519.pub"                        "$HOME/.killport/id_ed25519.pub" "⚠  3-pass secure erase" "1"
+
+    _remove_config_dir=false
+    _remove_killport_dir=false
+    if [ -d "$HOME/.config/killport" ]; then
+      _ask "  Remove folder  ~/.config/killport/" && _remove_config_dir=true
+      printf "\n"
+    fi
+    if [ -d "$HOME/.killport" ]; then
+      _ask "  Remove folder  ~/.killport/" && _remove_killport_dir=true
+      printf "\n"
+    fi
+
+    # ── Section 3: System firewall ───────────────────────────
+    printf "  ${_B}System config${_R}\n\n"
+    _clean_fw=false
+    _fw_found=false
+    if command -v ufw &>/dev/null && sudo ufw status 2>/dev/null | grep -q 'killport'; then
+      printf "  ${_Y}●${_R}  ufw rules  ${_D}(killport entries)${_R}\n"
+      _fw_found=true
+    fi
+    if command -v firewall-cmd &>/dev/null; then
+      printf "  ${_Y}●${_R}  firewalld rules\n"
+      _fw_found=true
+    fi
+    if [ "$_fw_found" = true ]; then
+      printf "\n"
+      _ask "  Remove firewall rules?" && _clean_fw=true || true
+    else
+      printf "  ${_D}none found${_R}\n"
+    fi
+    printf "\n"
+
+    # ── Summary ──────────────────────────────────────────────
+    printf "  ${_B}Summary — will be removed:${_R}\n\n"
+    _anything_selected=false
+
+    [ "$_tools_remove_browser"  = true ] && { printf "  ${_RE}✕${_R}  browser-harness\n"; _anything_selected=true; }
+    [ "$_tools_remove_nmap"     = true ] && { printf "  ${_RE}✕${_R}  nmap\n";            _anything_selected=true; }
+    [ "$_tools_remove_sshpass"  = true ] && { printf "  ${_RE}✕${_R}  sshpass\n";         _anything_selected=true; }
+    [ "$_tools_remove_hashcat"  = true ] && { printf "  ${_RE}✕${_R}  hashcat\n";         _anything_selected=true; }
+    [ "$_tools_remove_john"     = true ] && { printf "  ${_RE}✕${_R}  john\n";            _anything_selected=true; }
+
+    for _i in "${!_file_paths[@]}"; do
+      if [ "${_file_decisions[$_i]}" = "y" ]; then
+        if [ "${_file_sensitive[$_i]}" = "1" ]; then
+          printf "  ${_RE}✕${_R}  %s  ${_D}(secure erase)${_R}\n" "${_file_paths[$_i]}"
+        else
+          printf "  ${_RE}✕${_R}  %s\n" "${_file_paths[$_i]}"
+        fi
+        _anything_selected=true
+      fi
+    done
+
+    [ "$_remove_config_dir"  = true ] && { printf "  ${_RE}✕${_R}  ~/.config/killport/\n"; _anything_selected=true; }
+    [ "$_remove_killport_dir"= true ] && { printf "  ${_RE}✕${_R}  ~/.killport/\n";        _anything_selected=true; }
+    [ "$_clean_fw"           = true ] && { printf "  ${_RE}✕${_R}  firewall rules\n";      _anything_selected=true; }
+    printf "  ${_RE}✕${_R}  killport  ${_D}%s${_R}\n\n" "$(command -v killport 2>/dev/null || echo '/usr/local/bin/killport')"
+
+    [ "$_anything_selected" = false ] && \
+      printf "  ${_D}(no tools or data selected — only killport itself will be removed)${_R}\n\n"
+
+    _ask "  Proceed?" || { printf "\n  ${_D}Aborted.${_R}\n\n"; exit 0; }
+    printf "\n"
+
+    # ── Execute ──────────────────────────────────────────────
+
+    [ "$_tools_remove_browser"  = true ] && {
+      command -v browser-harness &>/dev/null && uv tool uninstall browser-harness 2>/dev/null || true
+      [ -d "$HOME/browser-harness" ] && rm -rf "$HOME/browser-harness" && printf "  Removed ~/browser-harness\n"
+      printf "  Removed browser-harness\n"
+    }
+    [ "$_tools_remove_nmap"    = true ] && _linux_remove_pkg nmap    && printf "  Removed nmap\n"
+    [ "$_tools_remove_sshpass" = true ] && _linux_remove_pkg sshpass && printf "  Removed sshpass\n"
+    [ "$_tools_remove_hashcat" = true ] && _linux_remove_pkg hashcat && printf "  Removed hashcat\n"
+    [ "$_tools_remove_john"    = true ] && _linux_remove_pkg john    && printf "  Removed john\n"
+
+    for _i in "${!_file_paths[@]}"; do
+      [ "${_file_decisions[$_i]}" = "y" ] || continue
+      _fp="${_file_paths[$_i]}"
+      if [ "${_file_sensitive[$_i]}" = "1" ]; then
+        _secure_rm "$_fp" && printf "  Securely erased %s\n" "$_fp"
+      elif [ -f "$_fp" ]; then
+        rm -f "$_fp" && printf "  Removed %s\n" "$_fp"
+      fi
+    done
+
+    [ "$_remove_config_dir"   = true ] && [ -d "$HOME/.config/killport" ] && rm -rf "$HOME/.config/killport" && printf "  Removed ~/.config/killport\n"
+    [ "$_remove_killport_dir" = true ] && [ -d "$HOME/.killport" ]        && rm -rf "$HOME/.killport"        && printf "  Removed ~/.killport\n"
+
+    if [ "$_clean_fw" = true ]; then
+      if command -v ufw &>/dev/null; then
+        sudo ufw status numbered 2>/dev/null | grep -oP '(?<=# )killport-\S+' | while read -r _rule; do
+          sudo ufw delete "$_rule" 2>/dev/null || true
+        done
+        printf "  Cleaned ufw rules\n"
+      fi
+      if command -v firewall-cmd &>/dev/null; then
+        firewall-cmd --list-ports --permanent 2>/dev/null | tr ' ' '\n' | while read -r _port; do
+          sudo firewall-cmd --permanent --remove-port="$_port" 2>/dev/null || true
+        done
+        sudo firewall-cmd --reload 2>/dev/null || true
+        printf "  Cleaned firewalld rules\n"
+      fi
+    fi
+
+    _INSTALL_PATH=$(command -v killport 2>/dev/null || true)
+    if [ -n "$_INSTALL_PATH" ] && [ -f "$_INSTALL_PATH" ]; then
+      sudo rm "$_INSTALL_PATH" && printf "  Removed %s\n" "$_INSTALL_PATH"
+    fi
+
+    printf "\n  ${_G}Done.${_R}  killport has been uninstalled.\n\n"
     ;;
 
   update)
