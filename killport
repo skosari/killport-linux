@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.11.28"
+VERSION="1.11.29"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
@@ -3945,6 +3945,135 @@ for m in json.load(sys.stdin).get('models',[]): print(m['name'])" 2>/dev/null ||
   exec opencode
 }
 
+vnc_dispatch() {
+  local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m' RE=$'\033[0;31m'
+  local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+  local subcmd="${1:-}"
+
+  _vnc_ip() {
+    hostname -I 2>/dev/null | awk '{print $1}' \
+      || ip route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}' \
+      || echo "unknown"
+  }
+
+  _vnc_running() {
+    sudo lsof -i :5900 -sTCP:LISTEN &>/dev/null 2>&1
+  }
+
+  _vnc_tool() {
+    if command -v x11vnc &>/dev/null; then echo "x11vnc"
+    elif command -v vncserver &>/dev/null; then echo "vncserver"
+    else echo ""; fi
+  }
+
+  case "$subcmd" in
+    start)
+      printf "\n${B}${C}  killport vnc${R}  ${D}starting${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+      if _vnc_running; then
+        printf "  ${G}●${R}  VNC is already running on port 5900\n\n"
+        printf "  ${D}Connect to: vnc://%s:5900${R}\n\n" "$(_vnc_ip)"
+        return 0
+      fi
+      local tool; tool=$(_vnc_tool)
+      if [ -z "$tool" ]; then
+        printf "  ${RE}No VNC server found.${R}\n\n"
+        printf "  Install one:\n"
+        printf "    ${C}sudo apt install x11vnc${R}                        ${D}(shares existing session)${R}\n"
+        printf "    ${C}sudo apt install tigervnc-standalone-server${R}    ${D}(new virtual session)${R}\n\n"
+        return 1
+      fi
+      if [ "$tool" = "x11vnc" ]; then
+        local display="${DISPLAY:-:0}"
+        printf "  ${D}Starting x11vnc on display %s...${R}\n\n" "$display"
+        x11vnc -bg -forever -shared -rfbport 5900 -display "$display" -noxdamage -quiet 2>/dev/null
+        sleep 1
+      else
+        printf "  ${D}Starting vncserver...${R}\n\n"
+        vncserver :1 -geometry 1920x1080 -depth 24 2>/dev/null
+        sleep 1
+      fi
+      if _vnc_running; then
+        printf "  ${G}✓${R}  VNC started on port ${B}5900${R}  ${D}(via %s)${R}\n\n" "$tool"
+        printf "  ${D}Connect to: vnc://%s:5900${R}\n\n" "$(_vnc_ip)"
+      else
+        printf "  ${RE}✕  Could not confirm VNC on port 5900${R}\n"
+        printf "  ${D}Ensure DISPLAY is set correctly (e.g. export DISPLAY=:0)${R}\n\n"
+        return 1
+      fi
+      ;;
+    stop)
+      printf "\n${B}${C}  killport vnc${R}  ${D}stopping${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+      if ! _vnc_running; then
+        printf "  ${D}VNC is not running.${R}\n\n"
+        return 0
+      fi
+      command -v x11vnc &>/dev/null   && pkill -f x11vnc 2>/dev/null || true
+      command -v vncserver &>/dev/null && vncserver -kill :1 2>/dev/null || true
+      local _pids; _pids=$(sudo lsof -ti :5900 2>/dev/null || true)
+      [ -n "$_pids" ] && echo "$_pids" | xargs sudo kill 2>/dev/null || true
+      sleep 1
+      if _vnc_running; then
+        printf "  ${RE}✕  VNC still appears to be running.${R}\n\n"
+        return 1
+      else
+        printf "  ${G}✓${R}  VNC stopped.\n\n"
+      fi
+      ;;
+    password)
+      local pw="${2:-}"
+      printf "\n${B}${C}  killport vnc${R}  ${D}set password${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+      if [ -z "$pw" ]; then
+        printf "  ${Y}Usage: killport vnc password <password>${R}\n\n"; return 1
+      fi
+      mkdir -p "$HOME/.vnc"
+      if command -v x11vnc &>/dev/null; then
+        x11vnc -storepasswd "$pw" "$HOME/.vnc/passwd" &>/dev/null
+        printf "  ${G}✓${R}  VNC password saved to ~/.vnc/passwd\n"
+        printf "  ${D}Restart VNC for the new password to take effect.${R}\n\n"
+      elif command -v vncpasswd &>/dev/null; then
+        printf '%s\n%s\n' "$pw" "$pw" | vncpasswd "$HOME/.vnc/passwd" &>/dev/null
+        printf "  ${G}✓${R}  VNC password saved to ~/.vnc/passwd\n"
+        printf "  ${D}Restart VNC for the new password to take effect.${R}\n\n"
+      else
+        printf "  ${RE}No VNC tool found. Install x11vnc or tigervnc first.${R}\n\n"
+        return 1
+      fi
+      ;;
+    ""|status)
+      printf "\n${B}${C}  killport vnc${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+      local ip; ip=$(_vnc_ip)
+      if _vnc_running; then
+        local proc; proc=$(sudo lsof -i :5900 -sTCP:LISTEN -n -P 2>/dev/null | awk 'NR>1{print $1}' | head -1)
+        printf "  ${G}●${R}  ${B}VNC running${R}  port 5900\n\n"
+        printf "  ${D}Process:    %s${R}\n" "$proc"
+        printf "  ${D}Connect to: vnc://%s:5900${R}\n\n" "$ip"
+      else
+        local tool; tool=$(_vnc_tool)
+        printf "  ${Y}○${R}  VNC is not running\n\n"
+        if [ -n "$tool" ]; then
+          printf "  ${D}Start with: killport vnc start  (using %s)${R}\n\n" "$tool"
+        else
+          printf "  ${D}No VNC server installed. Try: sudo apt install x11vnc${R}\n\n"
+        fi
+      fi
+      printf "  ${D}killport vnc start         — start VNC server${R}\n"
+      printf "  ${D}killport vnc stop          — stop VNC server${R}\n"
+      printf "  ${D}killport vnc password <pw> — set VNC password${R}\n\n"
+      ;;
+    *)
+      printf "\n  ${Y}Unknown subcommand: %s${R}\n\n" "$subcmd"
+      printf "  ${D}Usage: killport vnc [start|stop|password <pw>]${R}\n\n"
+      return 1
+      ;;
+  esac
+}
+
+# ── ─────────────────────────────────────────────────────────────────────────────
+
 case "$1" in
 
   config)
@@ -3981,6 +4110,10 @@ case "$1" in
 
   wol)
     wol_dispatch "${2:-}" "${3:-}" "${4:-}" "${5:-}"
+    ;;
+
+  vnc)
+    vnc_dispatch "${2:-}" "${3:-}"
     ;;
 
   watch)
