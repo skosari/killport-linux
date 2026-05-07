@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.11.29"
+VERSION="1.11.30"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
@@ -3949,125 +3949,157 @@ vnc_dispatch() {
   local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m' RE=$'\033[0;31m'
   local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
   local subcmd="${1:-}"
+  local VNC_KNOWN="$HOME/.killport/vnc_known"
 
-  _vnc_ip() {
+  _vnc_load() {
+    [ -f "$VNC_KNOWN" ] || return
+    grep -v '^\s*$\|^#' "$VNC_KNOWN" 2>/dev/null || true
+  }
+
+  _vnc_save_entry() {
+    local name="$1" host="$2"
+    mkdir -p "$HOME/.killport"
+    local tmp=""; [ -f "$VNC_KNOWN" ] && tmp=$(grep -v "^${name}|" "$VNC_KNOWN" 2>/dev/null || true)
+    { [ -n "$tmp" ] && printf '%s\n' "$tmp"; printf '%s|%s\n' "$name" "$host"; } > "$VNC_KNOWN"
+  }
+
+  _vnc_connect() {
+    local target="$1"
+    local viewer=""
+    for v in vncviewer xtigervncviewer xtightvncviewer vncviewer-tigervnc; do
+      command -v "$v" &>/dev/null && { viewer="$v"; break; }
+    done
+    if [ -z "$viewer" ]; then
+      printf "  ${RE}No VNC viewer found.${R}\n"
+      printf "  ${D}Install: sudo apt install tigervnc-viewer${R}\n\n"
+      return 1
+    fi
+    printf "  ${D}Launching %s...${R}\n\n" "$viewer"
+    "$viewer" "$target" &
+  }
+
+  _vnc_our_ip() {
     hostname -I 2>/dev/null | awk '{print $1}' \
-      || ip route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}' \
-      || echo "unknown"
-  }
-
-  _vnc_running() {
-    sudo lsof -i :5900 -sTCP:LISTEN &>/dev/null 2>&1
-  }
-
-  _vnc_tool() {
-    if command -v x11vnc &>/dev/null; then echo "x11vnc"
-    elif command -v vncserver &>/dev/null; then echo "vncserver"
-    else echo ""; fi
+      || ip route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1);exit}}' \
+      || echo ""
   }
 
   case "$subcmd" in
-    start)
-      printf "\n${B}${C}  killport vnc${R}  ${D}starting${R}\n"
+    list)
+      printf "\n${B}${C}  killport vnc${R}  ${D}saved connections${R}\n"
       printf "${C}  ────────────────────────────────────────────${R}\n\n"
-      if _vnc_running; then
-        printf "  ${G}●${R}  VNC is already running on port 5900\n\n"
-        printf "  ${D}Connect to: vnc://%s:5900${R}\n\n" "$(_vnc_ip)"
-        return 0
-      fi
-      local tool; tool=$(_vnc_tool)
-      if [ -z "$tool" ]; then
-        printf "  ${RE}No VNC server found.${R}\n\n"
-        printf "  Install one:\n"
-        printf "    ${C}sudo apt install x11vnc${R}                        ${D}(shares existing session)${R}\n"
-        printf "    ${C}sudo apt install tigervnc-standalone-server${R}    ${D}(new virtual session)${R}\n\n"
-        return 1
-      fi
-      if [ "$tool" = "x11vnc" ]; then
-        local display="${DISPLAY:-:0}"
-        printf "  ${D}Starting x11vnc on display %s...${R}\n\n" "$display"
-        x11vnc -bg -forever -shared -rfbport 5900 -display "$display" -noxdamage -quiet 2>/dev/null
-        sleep 1
+      local count=0
+      while IFS='|' read -r name host; do
+        printf "  ${G}★${R}  ${B}%-20s${R}  ${D}%s${R}\n" "$name" "$host"
+        (( count++ )) || true
+      done < <(_vnc_load)
+      if [ "$count" -eq 0 ]; then
+        printf "  ${D}No saved connections yet.${R}\n"
+        printf "  ${D}Run 'killport vnc save <name> <ip>' to add one.${R}\n\n"
       else
-        printf "  ${D}Starting vncserver...${R}\n\n"
-        vncserver :1 -geometry 1920x1080 -depth 24 2>/dev/null
-        sleep 1
-      fi
-      if _vnc_running; then
-        printf "  ${G}✓${R}  VNC started on port ${B}5900${R}  ${D}(via %s)${R}\n\n" "$tool"
-        printf "  ${D}Connect to: vnc://%s:5900${R}\n\n" "$(_vnc_ip)"
-      else
-        printf "  ${RE}✕  Could not confirm VNC on port 5900${R}\n"
-        printf "  ${D}Ensure DISPLAY is set correctly (e.g. export DISPLAY=:0)${R}\n\n"
-        return 1
+        printf "\n  ${D}%d connection(s)  ·  'killport vnc <name>' to connect  ·  'killport vnc delete <name>' to remove${R}\n\n" "$count"
       fi
       ;;
-    stop)
-      printf "\n${B}${C}  killport vnc${R}  ${D}stopping${R}\n"
-      printf "${C}  ────────────────────────────────────────────${R}\n\n"
-      if ! _vnc_running; then
-        printf "  ${D}VNC is not running.${R}\n\n"
-        return 0
-      fi
-      command -v x11vnc &>/dev/null   && pkill -f x11vnc 2>/dev/null || true
-      command -v vncserver &>/dev/null && vncserver -kill :1 2>/dev/null || true
-      local _pids; _pids=$(sudo lsof -ti :5900 2>/dev/null || true)
-      [ -n "$_pids" ] && echo "$_pids" | xargs sudo kill 2>/dev/null || true
-      sleep 1
-      if _vnc_running; then
-        printf "  ${RE}✕  VNC still appears to be running.${R}\n\n"
-        return 1
+
+    save)
+      local _sname="${2:-}" _shost="${3:-}"
+      [ -z "$_sname" ] || [ -z "$_shost" ] && { printf "\n  ${Y}Usage: killport vnc save <name> <ip[:port]>${R}\n\n"; exit 1; }
+      _vnc_save_entry "$_sname" "$_shost"
+      printf "\n  ${G}✓${R}  Saved ${B}%s${R}  →  ${D}%s${R}\n" "$_sname" "$_shost"
+      printf "  ${D}Connect with: killport vnc %s${R}\n\n" "$_sname"
+      ;;
+
+    delete|remove)
+      local _dname="${2:-}"
+      [ -z "$_dname" ] && { printf "\n  ${Y}Usage: killport vnc delete <name>${R}\n\n"; exit 1; }
+      if [ -f "$VNC_KNOWN" ]; then
+        local tmp; tmp=$(grep -v "^${_dname}|" "$VNC_KNOWN" 2>/dev/null || true)
+        printf '%s\n' "$tmp" > "$VNC_KNOWN"
+        printf "\n  ${G}✓${R}  Removed '${B}%s${R}'\n\n" "$_dname"
       else
-        printf "  ${G}✓${R}  VNC stopped.\n\n"
+        printf "\n  ${Y}No saved connections file found.${R}\n\n"
       fi
       ;;
-    password)
-      local pw="${2:-}"
-      printf "\n${B}${C}  killport vnc${R}  ${D}set password${R}\n"
+
+    "")
+      printf "\n${B}${C}  killport vnc — Scan Network${R}\n"
       printf "${C}  ────────────────────────────────────────────${R}\n\n"
-      if [ -z "$pw" ]; then
-        printf "  ${Y}Usage: killport vnc password <password>${R}\n\n"; return 1
+
+      local -a _entries=() _skip_ips=()
+      local _idx=0
+
+      # 1. Saved connections first
+      while IFS='|' read -r _name _host; do
+        _idx=$(( _idx + 1 ))
+        _entries+=("$_host")
+        _skip_ips+=("${_host%%:*}")
+        printf "  ${D}%2d${R}  ${G}★${R}  ${B}%-20s${R}  ${D}%s${R}\n" "$_idx" "$_name" "$_host"
+      done < <(_vnc_load)
+      [ "$_idx" -gt 0 ] && printf "\n"
+
+      # 2. Ping sweep + ARP scan
+      local our_ip; our_ip=$(_vnc_our_ip)
+      local base="${our_ip%.*}"
+      if [ -n "$base" ]; then
+        printf "  ${D}Scanning ${base}.0/24...${R}\n\n"
+        for i in $(seq 1 254); do ping -c 1 -W 1 "${base}.${i}" &>/dev/null & done
+        wait
+        local _pat; _pat=$(printf '%s' "$base" | sed 's/\./\\./g')
+        while read -r ip; do
+          [[ "$ip" == "$our_ip" ]] && continue
+          local _already=0
+          for _s in "${_skip_ips[@]+"${_skip_ips[@]}"}"; do [[ "$_s" == "$ip" ]] && { _already=1; break; }; done
+          [ "$_already" -eq 1 ] && continue
+          _idx=$(( _idx + 1 ))
+          _entries+=("$ip")
+          printf "  ${D}%2d${R}  ${D}%-24s${R}  %s\n" "$_idx" "?" "$ip"
+        done < <(arp -n 2>/dev/null | awk 'NR>1{print $1}' | grep -E "^${_pat}\.[0-9]+$" | sort -t. -k4 -n | uniq)
       fi
-      mkdir -p "$HOME/.vnc"
-      if command -v x11vnc &>/dev/null; then
-        x11vnc -storepasswd "$pw" "$HOME/.vnc/passwd" &>/dev/null
-        printf "  ${G}✓${R}  VNC password saved to ~/.vnc/passwd\n"
-        printf "  ${D}Restart VNC for the new password to take effect.${R}\n\n"
-      elif command -v vncpasswd &>/dev/null; then
-        printf '%s\n%s\n' "$pw" "$pw" | vncpasswd "$HOME/.vnc/passwd" &>/dev/null
-        printf "  ${G}✓${R}  VNC password saved to ~/.vnc/passwd\n"
-        printf "  ${D}Restart VNC for the new password to take effect.${R}\n\n"
-      else
-        printf "  ${RE}No VNC tool found. Install x11vnc or tigervnc first.${R}\n\n"
-        return 1
+
+      printf "\n"
+      [ "$_idx" -eq 0 ] && { printf "  ${D}No hosts found.${R}\n\n"; return 0; }
+
+      stty sane 2>/dev/null || true
+      printf "  Pick a number (1–%d): " "$_idx"
+      local pick; read -r pick </dev/tty
+      if ! [[ "$pick" =~ ^[0-9]+$ ]] || [ "$pick" -lt 1 ] || [ "$pick" -gt "$_idx" ]; then
+        printf "\n  ${RE}Invalid selection.${R}\n\n"; exit 1
       fi
-      ;;
-    ""|status)
-      printf "\n${B}${C}  killport vnc${R}\n"
-      printf "${C}  ────────────────────────────────────────────${R}\n\n"
-      local ip; ip=$(_vnc_ip)
-      if _vnc_running; then
-        local proc; proc=$(sudo lsof -i :5900 -sTCP:LISTEN -n -P 2>/dev/null | awk 'NR>1{print $1}' | head -1)
-        printf "  ${G}●${R}  ${B}VNC running${R}  port 5900\n\n"
-        printf "  ${D}Process:    %s${R}\n" "$proc"
-        printf "  ${D}Connect to: vnc://%s:5900${R}\n\n" "$ip"
-      else
-        local tool; tool=$(_vnc_tool)
-        printf "  ${Y}○${R}  VNC is not running\n\n"
-        if [ -n "$tool" ]; then
-          printf "  ${D}Start with: killport vnc start  (using %s)${R}\n\n" "$tool"
-        else
-          printf "  ${D}No VNC server installed. Try: sudo apt install x11vnc${R}\n\n"
+      local chosen="${_entries[$((pick - 1))]}"
+      printf "\n"
+      _vnc_connect "$chosen"
+
+      # Offer to save if not already saved
+      local _already_saved=0
+      while IFS='|' read -r _n _h; do
+        [[ "$_h" == "$chosen" || "${_h%%:*}" == "$chosen" ]] && { _already_saved=1; break; }
+      done < <(_vnc_load)
+      if [ "$_already_saved" -eq 0 ]; then
+        printf "  Save as (leave blank to skip): "
+        local _savename; read -r _savename </dev/tty
+        if [ -n "$_savename" ]; then
+          _vnc_save_entry "$_savename" "$chosen"
+          printf "\n  ${G}✓${R}  Saved as '${B}%s${R}'.  Use: killport vnc %s\n\n" "$_savename" "$_savename"
         fi
       fi
-      printf "  ${D}killport vnc start         — start VNC server${R}\n"
-      printf "  ${D}killport vnc stop          — stop VNC server${R}\n"
-      printf "  ${D}killport vnc password <pw> — set VNC password${R}\n\n"
       ;;
+
     *)
-      printf "\n  ${Y}Unknown subcommand: %s${R}\n\n" "$subcmd"
-      printf "  ${D}Usage: killport vnc [start|stop|password <pw>]${R}\n\n"
-      return 1
+      # Connect by saved name, or treat as direct IP/host
+      local _known_host=""
+      while IFS='|' read -r _n _h; do
+        [[ "$_n" == "$subcmd" ]] && { _known_host="$_h"; break; }
+      done < <(_vnc_load)
+
+      if [ -n "$_known_host" ]; then
+        printf "\n${B}${C}  killport vnc${R}  ${D}%s  (%s)${R}\n" "$subcmd" "$_known_host"
+        printf "${C}  ────────────────────────────────────────────${R}\n\n"
+        _vnc_connect "$_known_host"
+      else
+        printf "\n${B}${C}  killport vnc${R}  ${D}%s${R}\n" "$subcmd"
+        printf "${C}  ────────────────────────────────────────────${R}\n\n"
+        _vnc_connect "$subcmd"
+      fi
       ;;
   esac
 }
