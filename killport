@@ -3945,6 +3945,250 @@ for m in json.load(sys.stdin).get('models',[]): print(m['name'])" 2>/dev/null ||
   exec opencode
 }
 
+# ── Hub Server ───────────────────────────────────────────────────────────────
+
+hub_dispatch() {
+  local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m' RE=$'\033[0;31m'
+  local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+
+  local KP_DIR="$HOME/.killport"
+  local TOKEN_FILE="$KP_DIR/hub_token"
+  local PID_FILE="$KP_DIR/hub.pid"
+  local LOG_FILE="$KP_DIR/hub.log"
+  local HUB_PORT="${KP_HUB_PORT:-7878}"
+
+  _hub_token() {
+    if [ ! -f "$TOKEN_FILE" ]; then
+      mkdir -p "$KP_DIR"
+      openssl rand -hex 24 2>/dev/null > "$TOKEN_FILE" \
+        || python3 -c "import secrets; print(secrets.token_hex(24))" > "$TOKEN_FILE"
+    fi
+    cat "$TOKEN_FILE"
+  }
+
+  _hub_running() {
+    [ -f "$PID_FILE" ] || return 1
+    kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+  }
+
+  _hub_our_ip() {
+    ip route get 1.1.1.1 2>/dev/null | awk '/src/{print $7; exit}' \
+      || hostname -I 2>/dev/null | awk '{print $1}' \
+      || echo "127.0.0.1"
+  }
+
+  _hub_ensure_ws() {
+    python3 -c "import websockets" 2>/dev/null && return 0
+    printf "  ${D}Installing websockets...${R}\n"
+    pip3 install websockets -q 2>/dev/null || pip install websockets -q 2>/dev/null || {
+      printf "  ${RE}pip failed. Run: pip3 install websockets${R}\n\n"; exit 1
+    }
+  }
+
+  _hub_write_py() {
+    mkdir -p "$KP_DIR"
+    cat > "$KP_DIR/hub.py" <<'HUBEOF'
+#!/usr/bin/env python3
+"""KillPort hub server — PTY WebSocket bridge."""
+import asyncio, json, os, pty, re, select, signal, sys, termios
+
+HUB_PORT = int(os.environ.get("KP_HUB_PORT", "7878"))
+TOKEN_FILE = os.path.expanduser("~/.killport/hub_token")
+ANSI = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*[\x07\x1b\\])')
+
+def load_token():
+    try:
+        return open(TOKEN_FILE).read().strip()
+    except Exception:
+        return ""
+
+async def pty_read_chunk(master):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: os.read(master, 4096) if select.select([master], [], [], 0.05)[0] else b""
+    )
+
+async def handle(ws):
+    valid = load_token()
+    authed = False
+    master, slave = pty.openpty()
+    env = dict(os.environ, TERM="xterm-256color")
+    pid = os.fork()
+    if pid == 0:
+        os.close(master)
+        os.setsid()
+        import fcntl
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+        for fd in (0, 1, 2):
+            os.dup2(slave, fd)
+        if slave > 2:
+            os.close(slave)
+        os.execvpe("bash", ["bash", "-i"], env)
+        sys.exit(1)
+    os.close(slave)
+    buf = b""
+
+    async def drain():
+        nonlocal buf
+        while True:
+            try:
+                chunk = await pty_read_chunk(master)
+                if chunk:
+                    buf += chunk
+                    parts = buf.split(b"\n")
+                    buf = parts[-1]
+                    for p in parts[:-1]:
+                        line = ANSI.sub("", p.decode("utf-8", errors="replace")).rstrip("\r")
+                        if line:
+                            await ws.send(json.dumps({"t": "out", "d": line}))
+                else:
+                    await asyncio.sleep(0.02)
+            except Exception:
+                break
+
+    drain_task = asyncio.create_task(drain())
+    try:
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            t = msg.get("t", "")
+            if t == "auth":
+                if not valid or msg.get("token", "") == valid:
+                    authed = True
+                    await ws.send(json.dumps({"t": "hello"}))
+                else:
+                    await ws.send(json.dumps({"t": "err", "msg": "unauthorized"}))
+                    break
+            elif not authed:
+                continue
+            elif t == "cmd":
+                cmd = msg.get("cmd", "")
+                if cmd:
+                    os.write(master, (cmd + "\n").encode())
+            elif t == "input":
+                raw_input = msg.get("v", "")
+                if raw_input:
+                    os.write(master, raw_input.encode())
+    finally:
+        drain_task.cancel()
+        try:
+            os.kill(pid, signal.SIGTERM)
+            os.waitpid(pid, 0)
+        except Exception:
+            pass
+        try:
+            os.close(master)
+        except Exception:
+            pass
+
+async def main():
+    import websockets
+    async with websockets.serve(handle, "0.0.0.0", HUB_PORT):
+        sys.stdout.write(f"kp-hub running on port {HUB_PORT}\n")
+        sys.stdout.flush()
+        await asyncio.Future()
+
+asyncio.run(main())
+HUBEOF
+  }
+
+  case "${1:-status}" in
+    start)
+      if _hub_running; then
+        printf "\n  ${Y}Hub already running (PID $(cat "$PID_FILE"))${R}\n\n"; return 0
+      fi
+      printf "\n  Starting kp-hub...\n"
+      _hub_ensure_ws
+      _hub_write_py
+      KP_HUB_PORT="$HUB_PORT" nohup python3 "$KP_DIR/hub.py" >> "$LOG_FILE" 2>&1 &
+      echo $! > "$PID_FILE"
+      sleep 0.8
+      if _hub_running; then
+        printf "  ${G}✓ Hub running  ${D}ws://$(_hub_our_ip):${HUB_PORT}  ·  PID $(cat "$PID_FILE")${R}\n\n"
+      else
+        printf "  ${RE}✗ Hub failed to start — check: %s${R}\n\n" "$LOG_FILE"; exit 1
+      fi
+      ;;
+    stop)
+      if ! _hub_running; then
+        printf "\n  ${D}Hub is not running.${R}\n\n"; return 0
+      fi
+      local _pid; _pid=$(cat "$PID_FILE")
+      kill "$_pid" 2>/dev/null; rm -f "$PID_FILE"
+      printf "\n  ${G}✓ Hub stopped (PID %s)${R}\n\n" "$_pid"
+      ;;
+    restart)
+      hub_dispatch stop; hub_dispatch start
+      ;;
+    token)
+      _hub_token
+      ;;
+    status|*)
+      printf "\n${B}${C}  KillPort Hub${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+      local _ip; _ip=$(_hub_our_ip)
+      if _hub_running; then
+        printf "  ${G}●${R}  Running  ${D}ws://%s:%s  ·  PID %s${R}\n" "$_ip" "$HUB_PORT" "$(cat "$PID_FILE")"
+      else
+        printf "  ${Y}○${R}  Stopped  ${D}run: killport hub start${R}\n"
+      fi
+      printf "\n  ${D}Token:${R}  %s\n\n" "$(_hub_token)"
+      ;;
+  esac
+}
+
+# ── QR Connect ───────────────────────────────────────────────────────────────
+
+qrconnect_dispatch() {
+  local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m' RE=$'\033[0;31m'
+  local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+
+  local KP_DIR="$HOME/.killport"
+  local HUB_PORT="${KP_HUB_PORT:-7878}"
+
+  _qr_our_ip() {
+    ip route get 1.1.1.1 2>/dev/null | awk '/src/{print $7; exit}' \
+      || hostname -I 2>/dev/null | awk '{print $1}' \
+      || echo "127.0.0.1"
+  }
+
+  mkdir -p "$KP_DIR"
+  chmod 700 "$KP_DIR"
+
+  if ! kill -0 "$(cat "$KP_DIR/hub.pid" 2>/dev/null)" 2>/dev/null; then
+    printf "  ${D}Starting hub server...${R}\n"
+    hub_dispatch start
+  fi
+
+  local token ip machine
+  token=$(cat "$KP_DIR/hub_token" 2>/dev/null || { hub_dispatch token; cat "$KP_DIR/hub_token"; })
+  ip=$(_qr_our_ip)
+  machine=$(hostname -s 2>/dev/null || echo "linux")
+
+  local pair_url="kp://pair?v=1&token=${token}&machine=${machine}&url=ws://${ip}:${HUB_PORT}"
+
+  printf "\n${B}${C}  killport qrconnect${R}\n"
+  printf "${C}  ────────────────────────────────────────────${R}\n\n"
+  printf "  ${D}Machine : %s${R}\n" "$machine"
+  printf "  ${D}IP      : %s${R}\n" "$ip"
+  printf "  ${D}Hub     : ws://%s:%s${R}\n" "$ip" "$HUB_PORT"
+  printf "  ${D}Token   : %s${R}\n\n" "$token"
+
+  if command -v qrencode &>/dev/null; then
+    qrencode -t UTF8 -m 2 "$pair_url"
+    printf "\n"
+  else
+    printf "  ${Y}Install qrencode:${R}  apt install qrencode\n\n"
+    printf "  ${D}Or enter this URL manually in the killport app:${R}\n"
+    printf "  ${C}%s${R}\n\n" "$pair_url"
+  fi
+
+  printf "  ${D}Scan with the killport iPhone app to pair.${R}\n\n"
+}
+
 case "$1" in
 
   config)
@@ -4005,6 +4249,14 @@ case "$1" in
 
   code)
     code_dispatch "${2:-}"
+    ;;
+
+  hub)
+    hub_dispatch "${2:-}"
+    ;;
+
+  qrconnect)
+    qrconnect_dispatch
     ;;
 
   audit)
