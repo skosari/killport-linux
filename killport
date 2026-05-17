@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.11.28"
+VERSION="1.11.33"
 REPO="skosari/killport-linux"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
 API="https://api.github.com/repos/${REPO}/contents"
@@ -400,6 +400,31 @@ show_ip() {
     [ -n "$primary_status" ] && printf "${B}│  %-41s│${R}\n" "Status:    $primary_status"
     [ -n "$primary_ipv4" ]   && printf "${B}│  %-41s│${R}\n" "IPv4:      $primary_ipv4"
     [ -n "$primary_ipv6" ]   && printf "${B}│  %-41s│${R}\n" "IPv6:      $primary_ipv6"
+    printf "${B}└─────────────────────────────────────────┘${R}\n"
+  fi
+
+  # VPN status
+  local vpn_iface vpn_ip vpn_base
+  vpn_iface=$(ip link show 2>/dev/null | awk -F': ' '/^[0-9]+: (tun|tap|wg)[0-9]/{gsub(/@.*$/,"",$2); print $2; exit}')
+  if [ -n "$vpn_iface" ]; then
+    local B=$'\033[1;36m' G=$'\033[0;32m' Y=$'\033[1;33m' D=$'\033[2m' R=$'\033[0m'
+    vpn_ip=$(ip addr show "$vpn_iface" 2>/dev/null | awk '/inet /{gsub(/\/[0-9]+/,"",$2); print $2; exit}')
+    vpn_base=$(printf '%s' "$vpn_ip" | cut -d. -f1-3)
+    echo ""
+    printf "${B}VPN${R}  ${G}(connected)${R}\n"
+    echo "────────────────────────────────────"
+    printf "${B}┌─────────────────────────────────────────┐${R}\n"
+    printf "${B}│  %-41s│${R}\n" "Interface:   $vpn_iface"
+    [ -n "$vpn_ip" ] && printf "${B}│  ${R}${G}%-41s${B}│${R}\n" "Tunnel IP:   $vpn_ip"
+    while IFS= read -r route; do
+      [ -z "$route" ] && continue
+      printf "${B}│  ${R}${Y}%-41s${B}│${R}\n" "Remote LAN:  $route"
+    done < <(ip route show dev "$vpn_iface" 2>/dev/null | awk -v base="$vpn_base" '
+      /via/ && /\// && !/^(0\.0\.0\.0|128\.0\.0\.0|169\.)/ {
+        split($1, p, "/"); split(p[1], o, ".")
+        pfx = o[1] "." o[2] "." o[3]
+        if (pfx != base) print $1
+      }')
     printf "${B}└─────────────────────────────────────────┘${R}\n"
   fi
 
@@ -1597,6 +1622,26 @@ NET_SCAN_BASE=""
 NET_SCAN_HOSTS=()
 
 _net_detect_base() {
+  # Prefer remote LAN routed via VPN (tun/tap/wg) when connected
+  local vpn_iface vpn_ip vpn_base lan_prefix
+  vpn_iface=$(ip link show 2>/dev/null | awk -F': ' '/^[0-9]+: (tun|tap|wg)[0-9]/{gsub(/@.*$/,"",$2); print $2; exit}')
+  if [ -n "$vpn_iface" ]; then
+    vpn_ip=$(ip addr show "$vpn_iface" 2>/dev/null | awk '/inet /{gsub(/\/[0-9]+/,"",$2); print $2; exit}')
+    vpn_base=$(printf '%s' "$vpn_ip" | cut -d. -f1-3)
+    lan_prefix=$(ip route show dev "$vpn_iface" 2>/dev/null | awk -v base="$vpn_base" '
+      /via/ && /\// && !/^(0\.0\.0\.0|128\.0\.0\.0|169\.)/ {
+        split($1, p, "/"); split(p[1], o, ".")
+        pfx = o[1] "." o[2] "." o[3]
+        if (pfx != base) { print p[1]; exit }
+      }')
+    if [ -n "$lan_prefix" ]; then
+      NET_SCAN_BASE=$(printf '%s' "$lan_prefix" | cut -d. -f1-3)
+      return 0
+    elif [ -n "$vpn_ip" ]; then
+      NET_SCAN_BASE="$vpn_base"
+      return 0
+    fi
+  fi
   local myip
   myip=$(ip route get 8.8.8.8 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
   [ -z "$myip" ] && myip=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -2641,6 +2686,21 @@ if [ $# -eq 0 ]; then
   echo "  killport ssh delete <name> remove a saved SSH connection"
   echo "  killport ssh <name>        ssh to a saved connection using your key"
   echo "  killport ssh <name> <ip>   update saved IP (e.g. after DHCP change)"
+  echo ""
+  echo "  *** OPENVPN ***"
+  echo "  killport ovpn                        connect to saved VPN or scan for servers"
+  echo "  killport ovpn <name>                 connect using saved profile by name"
+  echo "  killport ovpn disconnect             kill active openvpn process"
+  echo "  killport ovpn status                 show tunnel info (connected/not, tunnel IP)"
+  echo "  killport ovpn import <name> <file>   import a .ovpn file and save profile"
+  echo "  killport ovpn list                   list saved profiles"
+  echo "  killport ovpn delete <name>          remove a saved profile"
+  echo "  killport ovpn server                 show server status / install prompt"
+  echo "  killport ovpn server install         install openvpn + easy-rsa, start service"
+  echo "  killport ovpn server newclient <n>   generate client cert + .ovpn file"
+  echo "  killport ovpn server clients         list issued clients"
+  echo "  killport ovpn server revoke <name>   revoke a client cert"
+  echo "  killport ovpn server start/stop      start or stop openvpn server service"
   echo ""
   echo "  *** WAKE ON LAN ***"
   echo "  killport wol               scan network and wake or save host"
@@ -3945,6 +4005,584 @@ for m in json.load(sys.stdin).get('models',[]): print(m['name'])" 2>/dev/null ||
   exec opencode
 }
 
+vnc_dispatch() {
+  local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m' RE=$'\033[0;31m'
+  local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+  local subcmd="${1:-}"
+  local VNC_KNOWN="$HOME/.killport/vnc_known"
+
+  _vnc_load() {
+    [ -f "$VNC_KNOWN" ] || return
+    grep -v '^\s*$\|^#' "$VNC_KNOWN" 2>/dev/null || true
+  }
+
+  _vnc_save_entry() {
+    local name="$1" host="$2"
+    mkdir -p "$HOME/.killport"
+    local tmp=""; [ -f "$VNC_KNOWN" ] && tmp=$(grep -v "^${name}|" "$VNC_KNOWN" 2>/dev/null || true)
+    { [ -n "$tmp" ] && printf '%s\n' "$tmp"; printf '%s|%s\n' "$name" "$host"; } > "$VNC_KNOWN"
+  }
+
+  _vnc_connect() {
+    local target="$1"
+    local viewer=""
+    for v in vncviewer xtigervncviewer xtightvncviewer vncviewer-tigervnc; do
+      command -v "$v" &>/dev/null && { viewer="$v"; break; }
+    done
+    if [ -z "$viewer" ]; then
+      printf "  ${RE}No VNC viewer found.${R}\n"
+      printf "  ${D}Install: sudo apt install tigervnc-viewer${R}\n\n"
+      return 1
+    fi
+    printf "  ${D}Launching %s...${R}\n\n" "$viewer"
+    "$viewer" "$target" &
+  }
+
+  _vnc_our_ip() {
+    hostname -I 2>/dev/null | awk '{print $1}' \
+      || ip route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1);exit}}' \
+      || echo ""
+  }
+
+  case "$subcmd" in
+    list)
+      printf "\n${B}${C}  killport vnc${R}  ${D}saved connections${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+      local count=0
+      while IFS='|' read -r name host; do
+        printf "  ${G}★${R}  ${B}%-20s${R}  ${D}%s${R}\n" "$name" "$host"
+        (( count++ )) || true
+      done < <(_vnc_load)
+      if [ "$count" -eq 0 ]; then
+        printf "  ${D}No saved connections yet.${R}\n"
+        printf "  ${D}Run 'killport vnc save <name> <ip>' to add one.${R}\n\n"
+      else
+        printf "\n  ${D}%d connection(s)  ·  'killport vnc <name>' to connect  ·  'killport vnc delete <name>' to remove${R}\n\n" "$count"
+      fi
+      ;;
+
+    save)
+      local _sname="${2:-}" _shost="${3:-}"
+      [ -z "$_sname" ] || [ -z "$_shost" ] && { printf "\n  ${Y}Usage: killport vnc save <name> <ip[:port]>${R}\n\n"; exit 1; }
+      _vnc_save_entry "$_sname" "$_shost"
+      printf "\n  ${G}✓${R}  Saved ${B}%s${R}  →  ${D}%s${R}\n" "$_sname" "$_shost"
+      printf "  ${D}Connect with: killport vnc %s${R}\n\n" "$_sname"
+      ;;
+
+    delete|remove)
+      local _dname="${2:-}"
+      [ -z "$_dname" ] && { printf "\n  ${Y}Usage: killport vnc delete <name>${R}\n\n"; exit 1; }
+      if [ -f "$VNC_KNOWN" ]; then
+        local tmp; tmp=$(grep -v "^${_dname}|" "$VNC_KNOWN" 2>/dev/null || true)
+        printf '%s\n' "$tmp" > "$VNC_KNOWN"
+        printf "\n  ${G}✓${R}  Removed '${B}%s${R}'\n\n" "$_dname"
+      else
+        printf "\n  ${Y}No saved connections file found.${R}\n\n"
+      fi
+      ;;
+
+    "")
+      printf "\n${B}${C}  killport vnc — Scan Network${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+
+      local -a _entries=() _skip_ips=()
+      local _idx=0
+
+      # 1. Saved connections first
+      while IFS='|' read -r _name _host; do
+        _idx=$(( _idx + 1 ))
+        _entries+=("$_host")
+        _skip_ips+=("${_host%%:*}")
+        printf "  ${D}%2d${R}  ${G}★${R}  ${B}%-20s${R}  ${D}%s${R}\n" "$_idx" "$_name" "$_host"
+      done < <(_vnc_load)
+      [ "$_idx" -gt 0 ] && printf "\n"
+
+      # 2. Network scan
+      local our_ip; our_ip=$(_vnc_our_ip)
+      local base="${our_ip%.*}"
+      if [ -n "$base" ]; then
+        local _pat; _pat=$(printf '%s' "$base" | sed 's/\./\\./g')
+        local -a _found=()
+        if command -v nmap &>/dev/null; then
+          printf "  ${D}Scanning ${base}.0/24...${R}\n\n"
+          while IFS= read -r ip; do
+            [[ "$ip" == "$our_ip" ]] && continue
+            _found+=("$ip")
+          done < <(nmap -sn "${base}.0/24" 2>/dev/null \
+            | awk '/Nmap scan report for/{ip=$NF; gsub(/[()]/,"",ip); print ip}' \
+            | grep -E "^${_pat}\.[0-9]+$")
+        else
+          printf "  ${D}Reading network hosts for ${base}.0/24...${R}\n\n"
+          while IFS= read -r ip; do
+            [[ "$ip" == "$our_ip" ]] && continue
+            _found+=("$ip")
+          done < <(arp -n 2>/dev/null | awk 'NR>1{print $1}' | grep -E "^${_pat}\.[0-9]+$" | sort -t. -k4 -n | uniq)
+        fi
+        for ip in "${_found[@]+"${_found[@]}"}"; do
+          local _already=0
+          for _s in "${_skip_ips[@]+"${_skip_ips[@]}"}"; do [[ "$_s" == "$ip" ]] && { _already=1; break; }; done
+          [ "$_already" -eq 1 ] && continue
+          _idx=$(( _idx + 1 ))
+          _entries+=("$ip")
+          printf "  ${D}%2d${R}  ${D}%-24s${R}  %s\n" "$_idx" "?" "$ip"
+        done
+      fi
+
+      printf "\n"
+      [ "$_idx" -eq 0 ] && { printf "  ${D}No hosts found.${R}\n\n"; return 0; }
+
+      stty sane 2>/dev/null || true
+      printf "  Pick a number (1–%d): " "$_idx"
+      local pick; read -r pick </dev/tty
+      if ! [[ "$pick" =~ ^[0-9]+$ ]] || [ "$pick" -lt 1 ] || [ "$pick" -gt "$_idx" ]; then
+        printf "\n  ${RE}Invalid selection.${R}\n\n"; exit 1
+      fi
+      local chosen="${_entries[$((pick - 1))]}"
+      printf "\n"
+      _vnc_connect "$chosen"
+
+      # Offer to save if not already saved
+      local _already_saved=0
+      while IFS='|' read -r _n _h; do
+        [[ "$_h" == "$chosen" || "${_h%%:*}" == "$chosen" ]] && { _already_saved=1; break; }
+      done < <(_vnc_load)
+      if [ "$_already_saved" -eq 0 ]; then
+        printf "  Save as (leave blank to skip): "
+        local _savename; read -r _savename </dev/tty
+        if [ -n "$_savename" ]; then
+          _vnc_save_entry "$_savename" "$chosen"
+          printf "\n  ${G}✓${R}  Saved as '${B}%s${R}'.  Use: killport vnc %s\n\n" "$_savename" "$_savename"
+        fi
+      fi
+      ;;
+
+    *)
+      # Connect by saved name, or treat as direct IP/host
+      local _known_host=""
+      while IFS='|' read -r _n _h; do
+        [[ "$_n" == "$subcmd" ]] && { _known_host="$_h"; break; }
+      done < <(_vnc_load)
+
+      if [ -n "$_known_host" ]; then
+        printf "\n${B}${C}  killport vnc${R}  ${D}%s  (%s)${R}\n" "$subcmd" "$_known_host"
+        printf "${C}  ────────────────────────────────────────────${R}\n\n"
+        _vnc_connect "$_known_host"
+      else
+        printf "\n${B}${C}  killport vnc${R}  ${D}%s${R}\n" "$subcmd"
+        printf "${C}  ────────────────────────────────────────────${R}\n\n"
+        _vnc_connect "$subcmd"
+      fi
+      ;;
+  esac
+}
+
+# ── OpenVPN ──────────────────────────────────────────────────────────────────
+
+OVPN_DIR="${HOME}/.config/killport/ovpn"
+OVPN_PROFILES_DIR="${OVPN_DIR}/profiles"
+OVPN_CERTS_DIR="${OVPN_DIR}/certs"
+OVPN_KNOWN_FILE="${OVPN_DIR}/ovpn_known"
+
+ovpn_dispatch() {
+  local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m' RE=$'\033[0;31m'
+  local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+  local subcmd="${1:-}"
+  local arg1="${2:-}"
+  local arg2="${3:-}"
+  local arg3="${4:-}"
+
+  # ── ensure dirs ─────────────────────────────────────────────────────────────
+  mkdir -p "$OVPN_DIR" "$OVPN_PROFILES_DIR" "$OVPN_CERTS_DIR"
+
+  # ── helpers ──────────────────────────────────────────────────────────────────
+  _ovpn_load() {
+    [ -f "$OVPN_KNOWN_FILE" ] || return
+    grep -v '^\s*$\|^#' "$OVPN_KNOWN_FILE" 2>/dev/null || true
+  }
+
+  _ovpn_save_entry() {
+    local name="$1" host="$2" file="$3"
+    local tmp=""; [ -f "$OVPN_KNOWN_FILE" ] && tmp=$(grep -v "^${name}|" "$OVPN_KNOWN_FILE" 2>/dev/null || true)
+    { [ -n "$tmp" ] && printf '%s\n' "$tmp"; printf '%s|%s|%s\n' "$name" "$host" "$file"; } > "$OVPN_KNOWN_FILE"
+  }
+
+  _ovpn_status() {
+    # Returns: connected=1 or connected=0; sets OVPN_TUN_IP OVPN_IFACE OVPN_REMOTE_LAN
+    OVPN_CONNECTED=0; OVPN_TUN_IP=""; OVPN_IFACE=""; OVPN_REMOTE_LAN=""
+    pgrep -x openvpn &>/dev/null || return 0
+    OVPN_CONNECTED=1
+    # Find tun/tap interface
+    local iface; iface=$(ip link show 2>/dev/null | awk -F': ' '/tun|tap/{print $2; exit}' || true)
+    if [ -n "$iface" ]; then
+      OVPN_IFACE="$iface"
+      OVPN_TUN_IP=$(ip addr show "$iface" 2>/dev/null | awk '/inet /{print $2; exit}' | cut -d/ -f1 || true)
+      OVPN_REMOTE_LAN=$(ip route show dev "$iface" 2>/dev/null | awk 'NR==1{print $1}' || true)
+    fi
+  }
+
+  _ovpn_show_status() {
+    _ovpn_status
+    if [ "$OVPN_CONNECTED" -eq 1 ]; then
+      printf "  ${G}● Connected${R}"
+      if [ -n "$OVPN_TUN_IP" ]; then
+        printf "  ${D}(%s  %s" "$OVPN_IFACE" "$OVPN_TUN_IP"
+        [ -n "$OVPN_REMOTE_LAN" ] && printf "  →  %s" "$OVPN_REMOTE_LAN"
+        printf ")${R}"
+      fi
+      printf "\n"
+    else
+      printf "  ${D}○ Not connected${R}\n"
+    fi
+  }
+
+  # ── status ───────────────────────────────────────────────────────────────────
+  if [ "$subcmd" = "status" ]; then
+    printf "\n${B}${C}  killport ovpn — Status${R}\n"
+    printf "${C}  ────────────────────────────────────────────${R}\n\n"
+    _ovpn_show_status
+    printf "\n"; return 0
+  fi
+
+  # ── disconnect ───────────────────────────────────────────────────────────────
+  if [ "$subcmd" = "disconnect" ]; then
+    if pgrep -x openvpn &>/dev/null; then
+      sudo pkill -x openvpn 2>/dev/null || true
+      printf "\n  ${G}✓${R}  OpenVPN process stopped.\n\n"
+    else
+      printf "\n  ${Y}No active OpenVPN process found.${R}\n\n"
+    fi
+    return 0
+  fi
+
+  # ── list ─────────────────────────────────────────────────────────────────────
+  if [ "$subcmd" = "list" ]; then
+    printf "\n${B}${C}  killport ovpn${R}  ${D}saved profiles${R}\n"
+    printf "${C}  ────────────────────────────────────────────${R}\n\n"
+    local count=0
+    while IFS='|' read -r _name _host _file; do
+      printf "  ${G}★${R}  ${B}%-20s${R}  ${D}%s${R}\n" "$_name" "$_host"
+      (( count++ )) || true
+    done < <(_ovpn_load)
+    if [ "$count" -eq 0 ]; then
+      printf "  ${D}No saved profiles yet.${R}\n"
+      printf "  ${D}Run 'killport ovpn import <name> <file.ovpn>' to add one.${R}\n\n"
+    else
+      printf "\n  ${D}%d profile(s)  ·  'killport ovpn <name>' to connect  ·  'killport ovpn delete <name>' to remove${R}\n\n" "$count"
+    fi
+    return 0
+  fi
+
+  # ── delete ───────────────────────────────────────────────────────────────────
+  if [ "$subcmd" = "delete" ] || [ "$subcmd" = "remove" ]; then
+    [ -z "$arg1" ] && { printf "\n  ${Y}Usage: killport ovpn delete <name>${R}\n\n"; exit 1; }
+    if [ -f "$OVPN_KNOWN_FILE" ]; then
+      # Get profile file path before deleting
+      local _file_to_rm; _file_to_rm=$(grep "^${arg1}|" "$OVPN_KNOWN_FILE" 2>/dev/null | head -1 | cut -d'|' -f3 || true)
+      local tmp; tmp=$(grep -v "^${arg1}|" "$OVPN_KNOWN_FILE" 2>/dev/null || true)
+      printf '%s\n' "$tmp" > "$OVPN_KNOWN_FILE"
+      # Remove profile file if it exists
+      if [ -n "$_file_to_rm" ]; then
+        local _fullpath; _fullpath=$(realpath "${OVPN_DIR}/${_file_to_rm}" 2>/dev/null || echo "${OVPN_DIR}/${_file_to_rm}")
+        [ -f "$_fullpath" ] && rm -f "$_fullpath"
+      fi
+      printf "\n  ${G}✓${R}  Removed '${B}%s${R}'\n\n" "$arg1"
+    else
+      printf "\n  ${Y}No saved profiles file found.${R}\n\n"
+    fi
+    return 0
+  fi
+
+  # ── import ───────────────────────────────────────────────────────────────────
+  if [ "$subcmd" = "import" ]; then
+    [ -z "$arg1" ] || [ -z "$arg2" ] && { printf "\n  ${Y}Usage: killport ovpn import <name> <file.ovpn>${R}\n\n"; exit 1; }
+    [ -f "$arg2" ] || { printf "\n  ${RE}File not found: %s${R}\n\n" "$arg2"; exit 1; }
+    local destfile="${OVPN_PROFILES_DIR}/${arg1}.ovpn"
+    cp "$arg2" "$destfile"
+    # Extract remote host
+    local remotehost="" remoteport="1194"
+    while IFS= read -r _line; do
+      if [[ "$_line" =~ ^[[:space:]]*remote[[:space:]]+([^[:space:]]+)[[:space:]]*([0-9]+)? ]]; then
+        remotehost="${BASH_REMATCH[1]}"
+        [ -n "${BASH_REMATCH[2]}" ] && remoteport="${BASH_REMATCH[2]}"
+        break
+      fi
+    done < "$destfile"
+    local hostport="${remotehost:-unknown}:${remoteport}"
+    _ovpn_save_entry "$arg1" "$hostport" "profiles/${arg1}.ovpn"
+    printf "\n  ${G}✓${R}  Imported '${B}%s${R}'\n" "$arg1"
+    printf "  ${D}Profile: %s${R}\n" "$destfile"
+    printf "  ${D}Remote:  %s${R}\n" "$hostport"
+    printf "  ${D}Connect: killport ovpn %s${R}\n\n" "$arg1"
+    return 0
+  fi
+
+  # ── server subcommands ───────────────────────────────────────────────────────
+  if [ "$subcmd" = "server" ]; then
+    local svcCmd="$arg1"
+
+    # ── server status / default ──────────────────────────────────────────────
+    if [ -z "$svcCmd" ]; then
+      printf "\n${B}${C}  killport ovpn server — Status${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+      if command -v systemctl &>/dev/null; then
+        local state; state=$(systemctl is-active openvpn@server 2>/dev/null || systemctl is-active openvpn 2>/dev/null || echo "inactive")
+        local sc; sc=$([ "$state" = "active" ] && echo "${G}" || echo "${Y}")
+        printf "  ${D}Service:${R}  %s%s${R}\n" "$sc" "$state"
+      fi
+      if command -v openvpn &>/dev/null; then
+        local ver; ver=$(openvpn --version 2>&1 | head -1)
+        printf "  ${D}Binary:${R}   %s\n" "$(command -v openvpn)"
+        printf "  ${D}Version:${R}  ${D}%s${R}\n" "$ver"
+      else
+        printf "  ${Y}OpenVPN not installed.${R}\n"
+        printf "  ${D}Run 'killport ovpn server install' to install it.${R}\n"
+      fi
+      printf "\n"; return 0
+    fi
+
+    # ── server install ───────────────────────────────────────────────────────
+    if [ "$svcCmd" = "install" ]; then
+      printf "\n${B}${C}  killport ovpn server install${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+      # Detect package manager
+      if command -v apt-get &>/dev/null; then
+        sudo apt-get update -qq && sudo apt-get install -y openvpn easy-rsa
+      elif command -v dnf &>/dev/null; then
+        sudo dnf install -y openvpn easy-rsa
+      elif command -v pacman &>/dev/null; then
+        sudo pacman -Sy --noconfirm openvpn easy-rsa
+      else
+        printf "  ${RE}Unsupported package manager. Please install openvpn and easy-rsa manually.${R}\n\n"; exit 1
+      fi
+      # Init PKI
+      local pkiDir="$OVPN_CERTS_DIR"
+      local easyrsa; easyrsa=$(command -v easyrsa 2>/dev/null || find /usr/share/easy-rsa /usr/lib/easy-rsa -name 'easyrsa' 2>/dev/null | head -1 || true)
+      if [ -z "$easyrsa" ]; then
+        printf "  ${RE}easyrsa not found after install.${R}\n\n"; exit 1
+      fi
+      if [ ! -d "$pkiDir/pki" ]; then
+        mkdir -p "$pkiDir"
+        EASYRSA_PKI="$pkiDir/pki" "$easyrsa" init-pki
+        EASYRSA_PKI="$pkiDir/pki" "$easyrsa" build-ca nopass
+        EASYRSA_PKI="$pkiDir/pki" "$easyrsa" build-server-full server nopass
+        EASYRSA_PKI="$pkiDir/pki" "$easyrsa" gen-dh
+        openvpn --genkey secret "$pkiDir/ta.key"
+      fi
+      # Write server config
+      local ourip; ourip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
+      local serverConf="/etc/openvpn/server.conf"
+      if [ ! -f "$serverConf" ]; then
+        sudo tee "$serverConf" > /dev/null <<SERVERCONF
+port 1194
+proto udp
+dev tun
+ca $pkiDir/pki/ca.crt
+cert $pkiDir/pki/issued/server.crt
+key $pkiDir/pki/private/server.key
+dh $pkiDir/pki/dh.pem
+tls-auth $pkiDir/ta.key 0
+server 10.8.0.0 255.255.0.0
+push "redirect-gateway def1"
+push "dhcp-option DNS 8.8.8.8"
+keepalive 10 120
+cipher AES-256-CBC
+persist-key
+persist-tun
+status $pkiDir/openvpn-status.log
+verb 3
+SERVERCONF
+        printf "  ${D}Server config written: %s${R}\n" "$serverConf"
+      fi
+      sudo systemctl enable --now openvpn@server 2>/dev/null || sudo systemctl enable --now openvpn 2>/dev/null || true
+      printf "\n  ${G}✓${R}  OpenVPN server installed and started.\n\n"; return 0
+    fi
+
+    # ── server newclient ─────────────────────────────────────────────────────
+    if [ "$svcCmd" = "newclient" ]; then
+      local clientName="$arg2"
+      [ -z "$clientName" ] && { printf "\n  ${Y}Usage: killport ovpn server newclient <name>${R}\n\n"; exit 1; }
+      local pkiDir="$OVPN_CERTS_DIR"
+      local easyrsa; easyrsa=$(command -v easyrsa 2>/dev/null || find /usr/share/easy-rsa /usr/lib/easy-rsa -name 'easyrsa' 2>/dev/null | head -1 || true)
+      [ -z "$easyrsa" ] && { printf "\n  ${RE}easyrsa not found.${R}\n\n"; exit 1; }
+      printf "\n  ${D}Generating client cert for '%s'...${R}\n\n" "$clientName"
+      EASYRSA_PKI="$pkiDir/pki" "$easyrsa" build-client-full "$clientName" nopass
+      # Assemble inline .ovpn
+      local ourip; ourip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "YOUR_SERVER_IP")
+      local outfile="${OVPN_PROFILES_DIR}/${clientName}.ovpn"
+      {
+        printf "client\ndev tun\nproto udp\n"
+        printf "remote %s 1194\nresolv-retry infinite\nnobind\n"  "$ourip"
+        printf "persist-key\npersist-tun\nremote-cert-tls server\n"
+        printf "cipher AES-256-CBC\nverb 3\nkey-direction 1\n"
+        printf "<ca>\n"; cat "$pkiDir/pki/ca.crt"; printf "</ca>\n"
+        printf "<cert>\n"; cat "$pkiDir/pki/issued/${clientName}.crt"; printf "</cert>\n"
+        printf "<key>\n"; cat "$pkiDir/pki/private/${clientName}.key"; printf "</key>\n"
+        printf "<tls-auth>\n"; cat "$pkiDir/ta.key"; printf "</tls-auth>\n"
+      } > "$outfile"
+      printf "  ${G}✓${R}  Client profile saved: ${B}%s${R}\n\n" "$outfile"; return 0
+    fi
+
+    # ── server clients ───────────────────────────────────────────────────────
+    if [ "$svcCmd" = "clients" ]; then
+      local pkiDir="$OVPN_CERTS_DIR"
+      printf "\n${B}${C}  Issued Clients${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+      if [ ! -d "$pkiDir/pki/issued" ]; then
+        printf "  ${Y}No PKI found. Run 'killport ovpn server install' first.${R}\n\n"; return 0
+      fi
+      local found=0
+      for f in "$pkiDir/pki/issued/"*.crt; do
+        [ -f "$f" ] || continue
+        local cname; cname=$(basename "$f" .crt)
+        [ "$cname" = "server" ] && continue
+        printf "  ${G}★${R}  ${B}%s${R}\n" "$cname"
+        (( found++ )) || true
+      done
+      [ "$found" -eq 0 ] && printf "  ${D}No client certificates issued yet.${R}\n  ${D}Run 'killport ovpn server newclient <name>' to create one.${R}\n"
+      printf "\n"; return 0
+    fi
+
+    # ── server revoke ────────────────────────────────────────────────────────
+    if [ "$svcCmd" = "revoke" ]; then
+      local clientName="$arg2"
+      [ -z "$clientName" ] && { printf "\n  ${Y}Usage: killport ovpn server revoke <name>${R}\n\n"; exit 1; }
+      local pkiDir="$OVPN_CERTS_DIR"
+      local easyrsa; easyrsa=$(command -v easyrsa 2>/dev/null || find /usr/share/easy-rsa /usr/lib/easy-rsa -name 'easyrsa' 2>/dev/null | head -1 || true)
+      [ -z "$easyrsa" ] && { printf "\n  ${RE}easyrsa not found.${R}\n\n"; exit 1; }
+      printf "\n  ${D}Revoking '%s'...${R}\n\n" "$clientName"
+      EASYRSA_PKI="$pkiDir/pki" "$easyrsa" revoke "$clientName"
+      EASYRSA_PKI="$pkiDir/pki" "$easyrsa" gen-crl
+      printf "\n  ${G}✓${R}  Revoked '%s'.\n\n" "$clientName"; return 0
+    fi
+
+    # ── server start ─────────────────────────────────────────────────────────
+    if [ "$svcCmd" = "start" ]; then
+      sudo systemctl start openvpn@server 2>/dev/null || sudo systemctl start openvpn 2>/dev/null || true
+      local state; state=$(systemctl is-active openvpn@server 2>/dev/null || echo "unknown")
+      local sc; sc=$([ "$state" = "active" ] && echo "${G}" || echo "${Y}")
+      printf "\n  OpenVPN service: %s%s${R}\n\n" "$sc" "$state"; return 0
+    fi
+
+    # ── server stop ──────────────────────────────────────────────────────────
+    if [ "$svcCmd" = "stop" ]; then
+      sudo systemctl stop openvpn@server 2>/dev/null || sudo systemctl stop openvpn 2>/dev/null || true
+      printf "\n  ${G}✓${R}  OpenVPN service stopped.\n\n"; return 0
+    fi
+
+    printf "\n  ${Y}Unknown server subcommand: %s${R}\n" "$svcCmd"
+    printf "  ${D}Usage: killport ovpn server [install|newclient|clients|revoke|start|stop]${R}\n\n"; return 1
+  fi
+
+  # ── connect by saved name ────────────────────────────────────────────────────
+  if [ -n "$subcmd" ]; then
+    local _known_host="" _known_file=""
+    while IFS='|' read -r _n _h _f; do
+      [[ "$_n" == "$subcmd" ]] && { _known_host="$_h"; _known_file="$_f"; break; }
+    done < <(_ovpn_load)
+
+    if [ -z "$_known_file" ]; then
+      printf "\n  ${Y}No saved profile named '%s'.${R}\n" "$subcmd"
+      printf "  ${D}Run 'killport ovpn list' to see saved profiles.${R}\n\n"; return 1
+    fi
+    local cfgpath="${OVPN_DIR}/${_known_file}"
+    [ -f "$cfgpath" ] || { printf "\n  ${RE}Profile file not found: %s${R}\n\n" "$cfgpath"; exit 1; }
+    printf "\n${B}${C}  killport ovpn${R}  ${D}%s  (%s)${R}\n" "$subcmd" "$_known_host"
+    printf "${C}  ────────────────────────────────────────────${R}\n\n"
+    printf "  ${D}Connecting via %s${R}\n" "$cfgpath"
+    printf "  ${D}Press Ctrl+C to disconnect.${R}\n\n"
+    sudo openvpn --config "$cfgpath"
+    return 0
+  fi
+
+  # ── no-arg: show status + saved profiles + scan + pick ──────────────────────
+  printf "\n${B}${C}  killport ovpn — VPN${R}\n"
+  printf "${C}  ────────────────────────────────────────────${R}\n\n"
+
+  _ovpn_show_status
+  printf "\n"
+
+  local -a _entries=() _files=() _skip_ips=()
+  local _idx=0
+
+  # 1. Saved profiles
+  while IFS='|' read -r _name _host _file; do
+    _idx=$(( _idx + 1 ))
+    _entries+=("$_name")
+    _files+=("$_file")
+    _skip_ips+=("${_host%%:*}")
+    printf "  ${D}%2d${R}  ${G}★${R}  ${B}%-20s${R}  ${D}%s${R}\n" "$_idx" "$_name" "$_host"
+  done < <(_ovpn_load)
+  [ "$_idx" -gt 0 ] && printf "\n"
+
+  # 2. Scan port 1194 on local network
+  local our_ip; our_ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
+  local base="${our_ip%.*}"
+  if [ -n "$base" ]; then
+    printf "  ${D}Scanning %s.0/24 for port 1194 ...${R}\n\n" "$base"
+    local -a _found_ips=()
+    # Ping sweep + check port 1194
+    for i in $(seq 1 254); do
+      local _ip="${base}.${i}"
+      [ "$_ip" = "$our_ip" ] && continue
+      (
+        if ping -c1 -W1 "$_ip" &>/dev/null; then
+          if timeout 0.5 bash -c "echo >/dev/tcp/${_ip}/1194" 2>/dev/null; then
+            echo "$_ip"
+          fi
+        fi
+      ) &
+    done | while IFS= read -r _ip; do
+      local _already=0
+      for _s in "${_skip_ips[@]+"${_skip_ips[@]}"}"; do [[ "$_s" == "$_ip" ]] && { _already=1; break; }; done
+      [ "$_already" -eq 1 ] && continue
+      _idx=$(( _idx + 1 ))
+      _entries+=("$_ip")
+      _files+=("")
+      printf "  ${D}%2d${R}  ${D}%-24s${R}  %s:1194\n" "$_idx" "?" "$_ip"
+    done
+    wait
+  fi
+
+  printf "\n"
+  [ "$_idx" -eq 0 ] && { printf "  ${D}No VPN servers or profiles found.${R}\n\n"; return 0; }
+
+  stty sane 2>/dev/null || true
+  printf "  Pick a number to connect, 'i' to import a .ovpn file, or 's' for server setup: "
+  local pick; read -r pick </dev/tty
+
+  if [ "$pick" = "i" ]; then
+    printf "  Path to .ovpn file: "; local ifile; read -r ifile </dev/tty
+    printf "  Save as name: "; local iname; read -r iname </dev/tty
+    [ -n "$ifile" ] && [ -n "$iname" ] && ovpn_dispatch "import" "$iname" "$ifile"
+    return 0
+  fi
+  if [ "$pick" = "s" ]; then ovpn_dispatch "server"; return 0; fi
+
+  if ! [[ "$pick" =~ ^[0-9]+$ ]] || [ "$pick" -lt 1 ] || [ "$pick" -gt "$_idx" ]; then
+    printf "\n  ${RE}Invalid selection.${R}\n\n"; exit 1
+  fi
+  local chosen="${_entries[$((pick - 1))]}"
+  local chosenfile="${_files[$((pick - 1))]}"
+
+  # Scan result with no saved profile
+  if [ -z "$chosenfile" ]; then
+    printf "  ${Y}No saved profile for %s — import a .ovpn file to connect.${R}\n" "$chosen"
+    printf "  Path to .ovpn file (leave blank to skip): "
+    local ifile; read -r ifile </dev/tty
+    [ -z "$ifile" ] && { printf "\n"; return 0; }
+    printf "  Save as name: "
+    local iname; read -r iname </dev/tty
+    if [ -n "$iname" ]; then
+      ovpn_dispatch "import" "$iname" "$ifile"
+      ovpn_dispatch "$iname"
+    fi
+    return 0
+  fi
+
+  # Connect by saved profile name
+  ovpn_dispatch "$chosen"
+}
+
 # ── Hub Server ───────────────────────────────────────────────────────────────
 
 hub_dispatch() {
@@ -4189,6 +4827,8 @@ qrconnect_dispatch() {
   printf "  ${D}Scan with the killport iPhone app to pair.${R}\n\n"
 }
 
+# ── ─────────────────────────────────────────────────────────────────────────────
+
 case "$1" in
 
   config)
@@ -4225,6 +4865,14 @@ case "$1" in
 
   wol)
     wol_dispatch "${2:-}" "${3:-}" "${4:-}" "${5:-}"
+    ;;
+
+  vnc)
+    vnc_dispatch "${2:-}" "${3:-}"
+    ;;
+
+  ovpn)
+    ovpn_dispatch "${2:-}" "${3:-}" "${4:-}" "${5:-}"
     ;;
 
   watch)
