@@ -4628,17 +4628,27 @@ hub_dispatch() {
     cat > "$KP_DIR/hub.py" <<'HUBEOF'
 #!/usr/bin/env python3
 """KillPort hub server — PTY WebSocket bridge."""
-import asyncio, json, os, pty, re, select, signal, sys, termios
+import asyncio, base64, json, os, pty, select, signal, sys, termios
 
 HUB_PORT = int(os.environ.get("KP_HUB_PORT", "7878"))
 TOKEN_FILE = os.path.expanduser("~/.killport/hub_token")
-ANSI = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*[\x07\x1b\\])')
+PIN_FILE   = os.path.expanduser("~/.killport/hub_pin")
 
 def load_token():
     try:
         return open(TOKEN_FILE).read().strip()
     except Exception:
         return ""
+
+def load_pin():
+    try:
+        return open(PIN_FILE).read().strip()
+    except Exception:
+        return ""
+
+def gen_pin():
+    import random
+    return "%06d" % random.randint(0, 999999)
 
 async def pty_read_chunk(master):
     loop = asyncio.get_event_loop()
@@ -4649,43 +4659,44 @@ async def pty_read_chunk(master):
 
 async def handle(ws):
     valid = load_token()
+    valid_pin = load_pin()
     authed = False
-    master, slave = pty.openpty()
-    env = dict(os.environ, TERM="xterm-256color")
-    pid = os.fork()
-    if pid == 0:
-        os.close(master)
-        os.setsid()
-        import fcntl
-        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-        for fd in (0, 1, 2):
-            os.dup2(slave, fd)
-        if slave > 2:
-            os.close(slave)
-        os.execvpe("bash", ["bash", "-i"], env)
-        sys.exit(1)
-    os.close(slave)
-    buf = b""
+    pin_sent = False
+    pid = None
+    master_fd = None
 
     async def drain():
-        nonlocal buf
         while True:
             try:
-                chunk = await pty_read_chunk(master)
+                chunk = await pty_read_chunk(master_fd)
                 if chunk:
-                    buf += chunk
-                    parts = buf.split(b"\n")
-                    buf = parts[-1]
-                    for p in parts[:-1]:
-                        line = ANSI.sub("", p.decode("utf-8", errors="replace")).rstrip("\r")
-                        if line:
-                            await ws.send(json.dumps({"t": "out", "d": line}))
+                    await ws.send(json.dumps({"t": "raw", "b": base64.b64encode(chunk).decode()}))
                 else:
                     await asyncio.sleep(0.02)
             except Exception:
                 break
 
-    drain_task = asyncio.create_task(drain())
+    async def start_shell():
+        nonlocal pid, master_fd
+        m, s = pty.openpty()
+        master_fd = m
+        env = dict(os.environ, TERM="xterm-256color")
+        child = os.fork()
+        if child == 0:
+            os.close(m)
+            os.setsid()
+            import fcntl
+            fcntl.ioctl(s, termios.TIOCSCTTY, 0)
+            for fd in (0, 1, 2):
+                os.dup2(s, fd)
+            if s > 2:
+                os.close(s)
+            os.execvpe("bash", ["bash", "-i"], env)
+            sys.exit(1)
+        os.close(s)
+        pid = child
+
+    drain_task = None
     try:
         async for raw in ws:
             try:
@@ -4693,37 +4704,60 @@ async def handle(ws):
             except Exception:
                 continue
             t = msg.get("t", "")
-            if t == "auth":
+            if t == "ping":
+                await ws.send(json.dumps({"t": "pong"}))
+            elif t == "auth":
                 if not valid or msg.get("token", "") == valid:
-                    authed = True
-                    await ws.send(json.dumps({"t": "hello"}))
+                    if msg.get("pair"):
+                        pin_sent = True
+                        await ws.send(json.dumps({"t": "need_pin"}))
+                    else:
+                        authed = True
+                        await start_shell()
+                        drain_task = asyncio.create_task(drain())
+                        await ws.send(json.dumps({"t": "hello"}))
                 else:
                     await ws.send(json.dumps({"t": "err", "msg": "unauthorized"}))
+                    break
+            elif t == "pin":
+                if pin_sent and msg.get("code", "") == valid_pin:
+                    authed = True
+                    await start_shell()
+                    drain_task = asyncio.create_task(drain())
+                    await ws.send(json.dumps({"t": "hello"}))
+                else:
+                    await ws.send(json.dumps({"t": "err", "msg": "wrong pin"}))
                     break
             elif not authed:
                 continue
             elif t == "cmd":
                 cmd = msg.get("cmd", "")
-                if cmd:
-                    os.write(master, (cmd + "\n").encode())
+                if cmd and master_fd is not None:
+                    os.write(master_fd, (cmd + "\n").encode())
             elif t == "input":
                 raw_input = msg.get("v", "")
-                if raw_input:
-                    os.write(master, raw_input.encode())
+                if raw_input and master_fd is not None:
+                    os.write(master_fd, raw_input.encode())
     finally:
-        drain_task.cancel()
-        try:
-            os.kill(pid, signal.SIGTERM)
-            os.waitpid(pid, 0)
-        except Exception:
-            pass
-        try:
-            os.close(master)
-        except Exception:
-            pass
+        if drain_task:
+            drain_task.cancel()
+        if pid is not None:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                os.waitpid(pid, 0)
+            except Exception:
+                pass
+        if master_fd is not None:
+            try:
+                os.close(master_fd)
+            except Exception:
+                pass
 
 async def main():
     import websockets
+    pin = gen_pin()
+    with open(PIN_FILE, "w") as f:
+        f.write(pin)
     async with websockets.serve(handle, "0.0.0.0", HUB_PORT):
         sys.stdout.write(f"kp-hub running on port {HUB_PORT}\n")
         sys.stdout.flush()
@@ -4796,10 +4830,8 @@ qrconnect_dispatch() {
   mkdir -p "$KP_DIR"
   chmod 700 "$KP_DIR"
 
-  if ! kill -0 "$(cat "$KP_DIR/hub.pid" 2>/dev/null)" 2>/dev/null; then
-    printf "  ${D}Starting hub server...${R}\n"
-    hub_dispatch start
-  fi
+  # Always restart hub to write fresh hub.py and generate a new PIN
+  hub_dispatch restart > /dev/null 2>&1
 
   local token ip machine
   token=$(cat "$KP_DIR/hub_token" 2>/dev/null || { hub_dispatch token; cat "$KP_DIR/hub_token"; })
@@ -4815,16 +4847,30 @@ qrconnect_dispatch() {
   printf "  ${D}Hub     : ws://%s:%s${R}\n" "$ip" "$HUB_PORT"
   printf "  ${D}Token   : %s${R}\n\n" "$token"
 
-  if command -v qrencode &>/dev/null; then
-    qrencode -t UTF8 -m 2 "$pair_url"
-    printf "\n"
-  else
-    printf "  ${Y}Install qrencode:${R}  apt install qrencode\n\n"
-    printf "  ${D}Or enter this URL manually in the killport app:${R}\n"
-    printf "  ${C}%s${R}\n\n" "$pair_url"
-  fi
+  python3 - "$pair_url" <<'PYQR'
+import sys, subprocess
 
-  printf "  ${D}Scan with the killport iPhone app to pair.${R}\n\n"
+url = sys.argv[1]
+
+try:
+    import qrcode
+except ImportError:
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "qrcode", "-q"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    import qrcode
+
+qr = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
+qr.add_data(url)
+qr.make(fit=True)
+qr.print_ascii(invert=True)
+print()
+PYQR
+
+  local _pin; _pin=$(cat "$HOME/.killport/hub_pin" 2>/dev/null || echo "------")
+  printf "  ${B}Pairing PIN : %s${R}\n\n" "$_pin"
+  printf "  ${D}Scan the QR code then enter this PIN in the iOS app.${R}\n\n"
 }
 
 # ── ─────────────────────────────────────────────────────────────────────────────
